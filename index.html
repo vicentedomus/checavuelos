@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>checavuelos — Monitor de vuelos a Italia</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>checavuelos</h1>
+    <p class="subtitle">Merida / Cancun → Italia & Paris → Merida / Cancun</p>
+    <p class="updated" id="updated">Cargando...</p>
+    <p class="updated" id="countdown"></p>
+    <span class="destination-tag">Boda en Toscana · Oct 2026</span>
+  </header>
+
+  <main>
+    <!-- Hero: Mejor combo -->
+    <section id="hero" class="hero hidden">
+      <div class="hero-badge" id="hero-badge">-</div>
+      <h2>Mejor combo ida + vuelta</h2>
+      <div class="hero-prices">
+        <div class="hero-price-main">
+          <span class="label">Por persona</span>
+          <span class="amount" id="hero-per-person">-</span>
+        </div>
+        <div class="hero-price-total">
+          <span class="label">Total 2 pasajeros</span>
+          <span class="amount" id="hero-total">-</span>
+        </div>
+      </div>
+      <div class="hero-details">
+        <div class="hero-flight">
+          <h3>✈ Ida</h3>
+          <p class="route" id="hero-out-route">-</p>
+          <p class="info" id="hero-out-info">-</p>
+          <p class="date" id="hero-out-date">-</p>
+          <a id="hero-out-link" href="#" target="_blank" class="btn">Google Flights</a>
+        </div>
+        <div class="hero-flight">
+          <h3>↩ Vuelta</h3>
+          <p class="route" id="hero-ret-route">-</p>
+          <p class="info" id="hero-ret-info">-</p>
+          <p class="date" id="hero-ret-date">-</p>
+          <a id="hero-ret-link" href="#" target="_blank" class="btn">Google Flights</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Umbrales -->
+    <section class="info-section">
+      <h2>Umbrales de precio (por persona, ida+vuelta)</h2>
+      <div class="thresholds">
+        <div class="threshold compra-ya">
+          <span class="dot"></span>
+          <span>≤ $750 — Compra ya</span>
+        </div>
+        <div class="threshold buen-precio">
+          <span class="dot"></span>
+          <span>$750–900 — Buen precio</span>
+        </div>
+        <div class="threshold normal">
+          <span class="dot"></span>
+          <span>$900–1,100 — Normal</span>
+        </div>
+        <div class="threshold caro">
+          <span class="dot"></span>
+          <span>> $1,100 — Caro</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Mensaje si no hay datos -->
+    <section id="no-data" class="no-data hidden">
+      <h2>Sin datos todavia</h2>
+      <p>El monitor aun no ha ejecutado su primera busqueda. Los datos apareceran automaticamente cuando el cron se ejecute.</p>
+    </section>
+
+    <!-- Grafica de tendencia -->
+    <section class="chart-section">
+      <h2>Tendencia de precios</h2>
+      <div class="chart-container">
+        <canvas id="price-chart"></canvas>
+      </div>
+      <p class="chart-empty hidden" id="chart-empty">No hay suficientes datos para mostrar la grafica.</p>
+    </section>
+
+    <!-- Tabla ida -->
+    <section class="table-section">
+      <h2>✈ Vuelos de ida</h2>
+      <p class="table-sub">MID / CUN → Italia / Paris · Sept 24-27</p>
+      <div class="table-wrap">
+        <table id="table-outbound">
+          <thead>
+            <tr>
+              <th>Origen</th>
+              <th>Destino</th>
+              <th>Aerolinea</th>
+              <th>Fecha</th>
+              <th>Escalas</th>
+              <th>Duracion</th>
+              <th>Precio</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Tabla vuelta -->
+    <section class="table-section">
+      <h2>↩ Vuelos de vuelta</h2>
+      <p class="table-sub">Italia → MID / CUN · Oct 12-14</p>
+      <div class="table-wrap">
+        <table id="table-return">
+          <thead>
+            <tr>
+              <th>Origen</th>
+              <th>Destino</th>
+              <th>Aerolinea</th>
+              <th>Fecha</th>
+              <th>Escalas</th>
+              <th>Duracion</th>
+              <th>Precio</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Tabla round-trip -->
+    <section class="table-section">
+      <h2>🔄 Vuelos redondos</h2>
+      <p class="table-sub">Ida + vuelta combinados · Precio por persona</p>
+      <div class="table-wrap">
+        <table id="table-roundtrip">
+          <thead>
+            <tr>
+              <th>Origen</th>
+              <th>Destino</th>
+              <th>Aerolinea</th>
+              <th>Escalas</th>
+              <th>Duracion</th>
+              <th>Precio RT</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <p>checavuelos · Boda en Toscana, Oct 2026 · Datos via Google Flights</p>
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

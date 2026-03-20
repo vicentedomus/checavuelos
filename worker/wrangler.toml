@@ -1,0 +1,21 @@
+name = "checavuelos-api"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+[triggers]
+crons = ["0 8 * * 2"]  # Martes 8am UTC (2am Merida). 16 calls/ejecucion × ~4/mes = 64/mes de 100 gratis
+
+[vars]
+ALLOWED_ORIGIN = "https://vicentedomus.github.io"
+ALERT_EMAIL = "vichomiguel@hotmail.com"
+BUDGET_COMPRA_YA = "750"
+BUDGET_BUEN_PRECIO = "900"
+REFRESH_SECRET = "checavuelos2026"
+
+[[kv_namespaces]]
+binding = "FLIGHTS_KV"
+id = "cd4c6944fd844b7b95ac5ce167bbfd64"
+
+# Secrets (configurar via CLI):
+#   wrangler secret put SERPAPI_KEY
+#   wrangler secret put RESEND_API_KEY
