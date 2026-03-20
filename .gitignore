@@ -1,0 +1,9 @@
+# MCP config (contains API keys)
+.mcp.json
+
+# Node modules
+node_modules/
+
+# Environment files
+.env
+.env.*

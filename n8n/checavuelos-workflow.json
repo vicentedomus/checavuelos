@@ -1,0 +1,184 @@
+{
+  "name": "checavuelos - Google Flights Scraper",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtDay": [2, 5],
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-worker-url",
+              "name": "workerUrl",
+              "value": "https://checavuelos-api.vicente-domus.workers.dev",
+              "type": "string"
+            },
+            {
+              "id": "cfg-ingest-secret",
+              "name": "ingestSecret",
+              "value": "={{$env.INGEST_SECRET}}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-scraper-api-key",
+              "name": "scraperApiKey",
+              "value": "={{$env.SCRAPER_API_KEY}}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000002",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ===== GOOGLE FLIGHTS SCRAPER VIA SCRAPERAPI =====\n// Genera URLs, scrappea via ScraperAPI, parsea resultados\n\nconst config = $input.first().json;\nconst SCRAPER_API_KEY = config.scraperApiKey;\n\nif (!SCRAPER_API_KEY) {\n  return [{ json: { error: 'SCRAPER_API_KEY not configured', outbound: [], returns: [], roundtrips: [] } }];\n}\n\n// --- Configuración de rutas ---\nconst ORIGINS = ['MID', 'CUN'];\nconst DESTINATIONS = ['FCO', 'FLR', 'PSA', 'MXP', 'CDG', 'ORY'];\nconst RETURN_ORIGINS = ['FCO', 'FLR', 'PSA', 'MXP', 'BGY', 'NAP', 'VCE'];\nconst OUTBOUND_DATES = ['2026-09-24', '2026-09-25', '2026-09-26', '2026-09-27'];\nconst RETURN_DATES = ['2026-10-12', '2026-10-13', '2026-10-14'];\nconst RT_OUTBOUND = '2026-09-25';\nconst RT_RETURN = '2026-10-12';\n\n// --- Protobuf encoder ---\nfunction encodeVarint(value) {\n  const bytes = [];\n  let v = value >>> 0;\n  if (v === 0) return [0];\n  while (v > 0) {\n    if (v > 0x7f) { bytes.push((v & 0x7f) | 0x80); v >>>= 7; }\n    else { bytes.push(v & 0x7f); v = 0; }\n  }\n  return bytes;\n}\n\nfunction encodeVarintField(fn, val) { return [...encodeVarint((fn << 3) | 0), ...encodeVarint(val)]; }\nfunction encodeLenDelim(fn, data) { const tag = encodeVarint((fn << 3) | 2); return [...tag, ...encodeVarint(data.length), ...data]; }\nfunction encodeStrField(fn, str) { const enc = Array.from(Buffer.from(str)); return encodeLenDelim(fn, enc); }\nfunction encodeAirport(fn, code) { return encodeLenDelim(fn, [...encodeVarintField(1, 1), ...encodeStrField(2, code)]); }\n\nfunction buildTfs(tripType, legs) {\n  let b = [...encodeVarintField(1, 28), ...encodeVarintField(2, tripType)];\n  for (const leg of legs) {\n    let lb = [...encodeStrField(2, leg.date)];\n    for (const o of [].concat(leg.origins)) lb.push(...encodeAirport(13, o));\n    for (const d of [].concat(leg.destinations)) lb.push(...encodeAirport(14, d));\n    b.push(...encodeLenDelim(3, lb));\n  }\n  b.push(...encodeVarintField(8, 1), ...encodeVarintField(9, 1), ...encodeVarintField(14, 1));\n  b.push(...encodeLenDelim(16, [0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]));\n  b.push(...encodeVarintField(19, 1));\n  return Buffer.from(b).toString('base64').replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');\n}\n\n// --- Generar búsquedas ---\nconst searches = [];\nfor (const origin of ORIGINS) {\n  for (const date of OUTBOUND_DATES) {\n    searches.push({ type: 'outbound', tfs: buildTfs(2, [{ date, origins: origin, destinations: DESTINATIONS }]) });\n  }\n}\nfor (const dest of ORIGINS) {\n  for (const date of RETURN_DATES) {\n    searches.push({ type: 'return', tfs: buildTfs(2, [{ date, origins: RETURN_ORIGINS, destinations: dest }]) });\n  }\n}\nfor (const origin of ORIGINS) {\n  searches.push({ type: 'roundtrip', tfs: buildTfs(1, [\n    { date: RT_OUTBOUND, origins: origin, destinations: DESTINATIONS },\n    { date: RT_RETURN, origins: DESTINATIONS, destinations: origin }\n  ])});\n}\n\n// --- Parser de HTML ---\nconst KNOWN = new Set(['MID','CUN','FCO','FLR','PSA','MXP','CDG','ORY','BGY','NAP','VCE','MEX','DFW','IAH','ATL','JFK','LAX','ORD','MIA','AMS','MAD','BCN','LHR','FRA','IST']);\nconst EXCLUDE = new Set(['USD','MXN','EUR','AND','THE','FOR','NOT','ALL','HRS','MIN','VIA','DAY','SEP','OCT','NOV','MON','TUE','WED','THU','FRI','SAT','SUN']);\n\nfunction parseFlights(html) {\n  const flights = [];\n  const seen = new Set();\n  \n  // Extract price matches with surrounding context\n  const priceRegex = /(?:US)?\\$([\\d,]+)/g;\n  let match;\n  while ((match = priceRegex.exec(html)) !== null) {\n    const price = parseInt(match[1].replace(/,/g, ''));\n    if (price < 80 || price > 50000) continue;\n    \n    // Get context around the price (500 chars before and after)\n    const start = Math.max(0, match.index - 500);\n    const end = Math.min(html.length, match.index + 500);\n    const context = html.substring(start, end);\n    \n    // Extract airport codes from context\n    const codes = (context.match(/\\b[A-Z]{3}\\b/g) || []).filter(c => KNOWN.has(c) && !EXCLUDE.has(c));\n    if (codes.length < 2) continue;\n    \n    const from = codes[0];\n    const to = codes[1];\n    const key = `${from}-${to}-${price}`;\n    if (seen.has(key)) continue;\n    seen.add(key);\n    \n    // Duration\n    const durMatch = context.match(/(\\d+)\\s*(?:hr?|h)(?:\\s*(\\d+)\\s*(?:min|m))?/i);\n    const durationH = durMatch ? parseInt(durMatch[1]) + (parseInt(durMatch[2] || '0') / 60) : 0;\n    \n    // Stops\n    const stopsMatch = context.match(/(\\d+)\\s*(?:stop|escala)/i);\n    const stops = stopsMatch ? parseInt(stopsMatch[1]) : 0;\n    \n    flights.push({\n      from, to,\n      airlines: 'Via Google Flights',\n      price_usd: price,\n      departure: '',\n      arrival: '',\n      stops,\n      duration_h: Math.round(durationH * 10) / 10,\n      deep_link: `https://www.google.com/travel/flights?q=flights+from+${from}+to+${to}`,\n    });\n  }\n  \n  return flights;\n}\n\n// --- Ejecutar scraping ---\nconst allOutbound = [];\nconst allReturns = [];\nconst allRoundtrips = [];\nconst errors = [];\n\nfor (let i = 0; i < searches.length; i++) {\n  const s = searches[i];\n  const gfUrl = `https://www.google.com/travel/flights/search?tfs=${s.tfs}&curr=USD&hl=es&gl=mx`;\n  const scraperUrl = `http://api.scraperapi.com?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(gfUrl)}&render=true&country_code=mx&device_type=desktop`;\n  \n  try {\n    const html = await $helpers.httpRequest({ method: 'GET', url: scraperUrl, timeout: 60000 });\n    const flights = parseFlights(typeof html === 'string' ? html : JSON.stringify(html));\n    \n    if (s.type === 'outbound') allOutbound.push(...flights);\n    else if (s.type === 'return') allReturns.push(...flights);\n    else {\n      for (const f of flights) f.type = 'roundtrip';\n      allRoundtrips.push(...flights);\n    }\n  } catch (err) {\n    errors.push(`${s.type}: ${err.message}`);\n  }\n  \n  // Rate limiting\n  if (i < searches.length - 1) {\n    await new Promise(r => setTimeout(r, 4000));\n  }\n}\n\n// --- Deduplicar ---\nfunction dedup(flights) {\n  const m = new Map();\n  for (const f of flights) {\n    const k = `${f.from}-${f.to}-${f.airlines}-${f.price_usd}`;\n    if (!m.has(k) || f.price_usd < m.get(k).price_usd) m.set(k, f);\n  }\n  return [...m.values()].sort((a, b) => a.price_usd - b.price_usd);\n}\n\nreturn [{\n  json: {\n    outbound: dedup(allOutbound).slice(0, 15),\n    returns: dedup(allReturns).slice(0, 15),\n    roundtrips: dedup(allRoundtrips).slice(0, 10),\n    _meta: {\n      scraped_at: new Date().toISOString(),\n      total_searches: searches.length,\n      errors: errors.length ? errors : undefined\n    }\n  }\n}];"
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000003",
+      "name": "Scrape Google Flights",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-flights",
+              "leftValue": "={{ $json.outbound.length + $json.returns.length + $json.roundtrips.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000004",
+      "name": "Has Results?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').item.json.workerUrl }}/api/ingest",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Config').item.json.ingestSecret }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ outbound: $json.outbound, returns: $json.returns, roundtrips: $json.roundtrips }) }}"
+      },
+      "id": "a1b2c3d4-0005-4000-8000-000000000005",
+      "name": "POST to Ingest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, -80]
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0006-4000-8000-000000000006",
+      "name": "No Data Found",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [880, 120]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Scrape Google Flights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scrape Google Flights": {
+      "main": [
+        [
+          {
+            "node": "Has Results?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Results?": {
+      "main": [
+        [
+          {
+            "node": "POST to Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Data Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [],
+  "pinData": {}
+}

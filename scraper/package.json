@@ -1,0 +1,14 @@
+{
+  "name": "checavuelos-scraper",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Google Flights scraper for checavuelos using Playwright",
+  "scripts": {
+    "scrape": "node flights-scraper.mjs",
+    "scrape:debug": "DEBUG=1 node flights-scraper.mjs",
+    "install-browser": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.58.0"
+  }
+}
