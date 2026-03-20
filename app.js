@@ -9,8 +9,12 @@
   function getPriceLevel(totalPerPerson) {
     if (totalPerPerson <= CONFIG.BUDGET_COMPRA_YA) return 'compra-ya';
     if (totalPerPerson <= CONFIG.BUDGET_BUEN_PRECIO) return 'buen-precio';
-    if (totalPerPerson <= 1100) return 'normal';
+    if (totalPerPerson <= (CONFIG.BUDGET_NORMAL_MAX || 18000)) return 'normal';
     return 'caro';
+  }
+
+  function formatPrice(amount) {
+    return '$' + amount.toLocaleString('es-MX');
   }
 
   function getLevelText(level) {
@@ -71,20 +75,20 @@
     badge.textContent = getLevelText(level);
     badge.className = `hero-badge ${level}`;
 
-    $('#hero-per-person').textContent = `$${combo.total_per_person} USD`;
-    $('#hero-total').textContent = `$${combo.total_2_passengers} USD`;
+    $('#hero-per-person').textContent = `${formatPrice(combo.total_per_person)} MXN`;
+    $('#hero-total').textContent = `${formatPrice(combo.total_2_passengers)} MXN`;
 
     // Ida
     const ob = combo.outbound;
     $('#hero-out-route').textContent = `${ob.from} \u2192 ${ob.to}`;
-    $('#hero-out-info').textContent = `${ob.airlines} \u00b7 ${ob.stops} escala(s) \u00b7 ${ob.duration_h}h \u00b7 $${ob.price_usd}`;
+    $('#hero-out-info').textContent = `${ob.airlines} \u00b7 ${ob.stops} escala(s) \u00b7 ${ob.duration_h}h \u00b7 ${formatPrice(ob.price_usd)}`;
     $('#hero-out-date').textContent = formatDate(ob.departure);
     $('#hero-out-link').href = ob.deep_link;
 
     // Vuelta
     const ret = combo.return;
     $('#hero-ret-route').textContent = `${ret.from} \u2192 ${ret.to}`;
-    $('#hero-ret-info').textContent = `${ret.airlines} \u00b7 ${ret.stops} escala(s) \u00b7 ${ret.duration_h}h \u00b7 $${ret.price_usd}`;
+    $('#hero-ret-info').textContent = `${ret.airlines} \u00b7 ${ret.stops} escala(s) \u00b7 ${ret.duration_h}h \u00b7 ${formatPrice(ret.price_usd)}`;
     $('#hero-ret-date').textContent = formatDate(ret.departure);
     $('#hero-ret-link').href = ret.deep_link;
   }
@@ -107,7 +111,7 @@
         <td>${formatDate(f.departure)}</td>
         <td>${f.stops}</td>
         <td>${f.duration_h}h</td>
-        <td class="price ${level}">\$${f.price_usd}</td>
+        <td class="price ${level}">${formatPrice(f.price_usd)}</td>
         <td><a href="${f.deep_link}" target="_blank" class="btn btn-sm">Ver</a></td>
       </tr>`;
     }).join('');
@@ -130,7 +134,7 @@
         <td>${f.airlines}</td>
         <td>${f.stops}</td>
         <td>${f.duration_h}h</td>
-        <td class="price ${level}">\$${f.price_usd}</td>
+        <td class="price ${level}">${formatPrice(f.price_usd)}</td>
         <td><a href="${f.deep_link}" target="_blank" class="btn btn-sm">Ver</a></td>
       </tr>`;
     }).join('');
@@ -213,7 +217,7 @@
           y: {
             beginAtZero: false,
             ticks: {
-              callback: (v) => '$' + v,
+              callback: (v) => '$' + v.toLocaleString('es-MX'),
             },
           },
         },
@@ -236,7 +240,7 @@
             ctx.stroke();
             ctx.fillStyle = '#e53e3e';
             ctx.font = '11px sans-serif';
-            ctx.fillText('$750 COMPRA YA', chart.chartArea.left + 4, y750 - 4);
+            ctx.fillText('$11,000 COMPRA YA', chart.chartArea.left + 4, y750 - 4);
             ctx.restore();
           }
 
@@ -252,7 +256,7 @@
             ctx.stroke();
             ctx.fillStyle = '#38a169';
             ctx.font = '11px sans-serif';
-            ctx.fillText('$900 Buen precio', chart.chartArea.left + 4, y900 - 4);
+            ctx.fillText('$14,000 Buen precio', chart.chartArea.left + 4, y900 - 4);
             ctx.restore();
           }
         },

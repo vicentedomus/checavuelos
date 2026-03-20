@@ -258,7 +258,7 @@ async function searchFlights(config, apiKey) {
     type: config.type,
     hl: 'es',
     gl: 'mx',
-    currency: 'USD',
+    currency: 'MXN',
     sort_by: '2',
     api_key: apiKey,
   });
@@ -430,8 +430,8 @@ async function runSearch(env) {
 // --- Alertas email via Resend ---
 
 async function shouldSendAlert(env, currentPrice) {
-  const budgetCompraYa = parseInt(env.BUDGET_COMPRA_YA || '750');
-  const budgetBuenPrecio = parseInt(env.BUDGET_BUEN_PRECIO || '900');
+  const budgetCompraYa = parseInt(env.BUDGET_COMPRA_YA || '11000');
+  const budgetBuenPrecio = parseInt(env.BUDGET_BUEN_PRECIO || '14000');
 
   if (currentPrice > budgetBuenPrecio) return null;
 
@@ -467,21 +467,21 @@ async function sendAlert(env, level, bestCombo) {
 
   const html = `
     <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-      <h1 style="color:${color}">${emoji} ${levelText}: $${totalPerPerson}/persona</h1>
-      <p style="font-size:18px">Total para 2 pasajeros: <strong>$${total2} USD</strong></p>
+      <h1 style="color:${color}">${emoji} ${levelText}: $${totalPerPerson.toLocaleString('es-MX')}/persona</h1>
+      <p style="font-size:18px">Total para 2 pasajeros: <strong>$${total2.toLocaleString('es-MX')} MXN</strong></p>
       <hr>
       <h3>\u2708\ufe0f Ida</h3>
       <p><strong>${ob.from_city} (${ob.from}) \u2192 ${ob.to_city} (${ob.to})</strong></p>
       <p>${ob.airlines} \u00b7 ${ob.stops} escala(s) \u00b7 ${ob.duration_h}h</p>
       <p>Salida: ${ob.departure}</p>
-      <p>Precio: <strong>$${ob.price_usd} USD</strong></p>
+      <p>Precio: <strong>$${ob.price_usd.toLocaleString('es-MX')} MXN</strong></p>
       <a href="${ob.deep_link}" style="display:inline-block;padding:10px 20px;background:${color};color:#fff;text-decoration:none;border-radius:5px">Buscar en Google Flights</a>
       <hr>
       <h3>\ud83d\udeec Vuelta</h3>
       <p><strong>${ret.from_city} (${ret.from}) \u2192 ${ret.to_city} (${ret.to})</strong></p>
       <p>${ret.airlines} \u00b7 ${ret.stops} escala(s) \u00b7 ${ret.duration_h}h</p>
       <p>Salida: ${ret.departure}</p>
-      <p>Precio: <strong>$${ret.price_usd} USD</strong></p>
+      <p>Precio: <strong>$${ret.price_usd.toLocaleString('es-MX')} MXN</strong></p>
       <a href="${ret.deep_link}" style="display:inline-block;padding:10px 20px;background:${color};color:#fff;text-decoration:none;border-radius:5px">Buscar en Google Flights</a>
       <hr>
       <p style="color:#888;font-size:12px">checavuelos \u00b7 Datos via n8n + Google Flights</p>
@@ -497,7 +497,7 @@ async function sendAlert(env, level, bestCombo) {
     body: JSON.stringify({
       from: 'checavuelos <onboarding@resend.dev>',
       to: env.ALERT_EMAIL || 'vichomiguel@hotmail.com',
-      subject: `${emoji} ${levelText}: $${totalPerPerson}/persona - Vuelo a Italia`,
+      subject: `${emoji} ${levelText}: $${totalPerPerson.toLocaleString('es-MX')} MXN/persona - Vuelo a Italia`,
       html,
     }),
   });

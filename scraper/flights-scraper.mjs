@@ -123,7 +123,7 @@ function buildTfsParam(tripType, legs) {
 }
 
 function buildGoogleFlightsUrl(tfs) {
-  return `https://www.google.com/travel/flights/search?tfs=${tfs}&curr=USD&hl=es&gl=mx`;
+  return `https://www.google.com/travel/flights/search?tfs=${tfs}&curr=MXN&hl=es&gl=mx`;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -233,13 +233,13 @@ async function extractFlightsFromPage(page) {
       const text = el.innerText || '';
       if (text.length < 30 || text.length > 3000) continue;
 
-      // Must have a price
-      const priceMatch = text.match(/(?:US)?\$([\d,.]+)/);
+      // Must have a price (MXN format: $12,345 or MX$12,345 or MXN 12,345)
+      const priceMatch = text.match(/(?:MX|MXN\s*)?\$([\d,. ]+)/);
       if (!priceMatch) continue;
 
-      const rawPrice = priceMatch[1].replace(/[,.]/g, (m) => m === ',' ? '' : '.');
+      const rawPrice = priceMatch[1].replace(/[\s,]/g, '').replace(/\.(?=\d{3})/g, '');
       const price = Math.round(parseFloat(rawPrice));
-      if (!price || price < 80 || price > 50000) continue;
+      if (!price || price < 1000 || price > 500000) continue;
 
       // Extract airport codes
       const codeMatches = text.match(/\b[A-Z]{3}\b/g) || [];
