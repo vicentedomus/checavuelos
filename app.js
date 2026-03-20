@@ -107,7 +107,7 @@
         <td>${formatDate(f.departure)}</td>
         <td>${f.stops}</td>
         <td>${f.duration_h}h</td>
-        <td class="price">\$${f.price_usd}</td>
+        <td class="price ${level}">\$${f.price_usd}</td>
         <td><a href="${f.deep_link}" target="_blank" class="btn btn-sm">Ver</a></td>
       </tr>`;
     }).join('');
@@ -130,7 +130,7 @@
         <td>${f.airlines}</td>
         <td>${f.stops}</td>
         <td>${f.duration_h}h</td>
-        <td class="price">\$${f.price_usd}</td>
+        <td class="price ${level}">\$${f.price_usd}</td>
         <td><a href="${f.deep_link}" target="_blank" class="btn btn-sm">Ver</a></td>
       </tr>`;
     }).join('');
@@ -271,7 +271,8 @@
 
       if (latestRes.ok) {
         const latest = await latestRes.json();
-        $('#updated').textContent = `Actualizado: ${timeAgo(latest.updated_at)} (${formatDateTime(latest.updated_at)})`;
+        const source = latest.source === 'n8n' ? 'via n8n' : latest.source === 'serpapi' ? 'via SerpAPI' : '';
+        $('#updated').textContent = `Actualizado: ${timeAgo(latest.updated_at)} ${source} (${formatDateTime(latest.updated_at)})`;
         renderHero(latest);
         renderTable('table-outbound', latest.outbound);
         renderTable('table-return', latest.returns);
@@ -296,14 +297,22 @@
   function startCountdown() {
     function getNextRun() {
       const now = new Date();
-      const next = new Date(now);
-      const daysUntilTuesday = (2 - now.getUTCDay() + 7) % 7 || 7;
-      next.setUTCDate(now.getUTCDate() + daysUntilTuesday);
-      next.setUTCHours(8, 0, 0, 0);
-      if (next <= now) {
-        next.setUTCDate(next.getUTCDate() + 7);
+      // Schedule: Tuesday (2) and Friday (5) at 8am UTC
+      const runDays = [2, 5];
+      let best = null;
+      for (const day of runDays) {
+        const candidate = new Date(now);
+        let diff = (day - now.getUTCDay() + 7) % 7;
+        if (diff === 0) {
+          // Same day: check if 8am already passed
+          candidate.setUTCHours(8, 0, 0, 0);
+          if (candidate <= now) diff = 7;
+        }
+        candidate.setUTCDate(now.getUTCDate() + diff);
+        candidate.setUTCHours(8, 0, 0, 0);
+        if (!best || candidate < best) best = candidate;
       }
-      return next;
+      return best;
     }
 
     function updateCountdown() {
