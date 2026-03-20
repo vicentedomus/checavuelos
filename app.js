@@ -297,22 +297,13 @@
   function startCountdown() {
     function getNextRun() {
       const now = new Date();
-      // Schedule: Tuesday (2) and Friday (5) at 8am UTC
-      const runDays = [2, 5];
-      let best = null;
-      for (const day of runDays) {
-        const candidate = new Date(now);
-        let diff = (day - now.getUTCDay() + 7) % 7;
-        if (diff === 0) {
-          // Same day: check if 8am already passed
-          candidate.setUTCHours(8, 0, 0, 0);
-          if (candidate <= now) diff = 7;
-        }
-        candidate.setUTCDate(now.getUTCDate() + diff);
-        candidate.setUTCHours(8, 0, 0, 0);
-        if (!best || candidate < best) best = candidate;
+      // Schedule: daily at 2 AM Merida (8 AM UTC)
+      const next = new Date(now);
+      next.setUTCHours(8, 0, 0, 0);
+      if (next <= now) {
+        next.setUTCDate(next.getUTCDate() + 1);
       }
-      return best;
+      return next;
     }
 
     function updateCountdown() {
