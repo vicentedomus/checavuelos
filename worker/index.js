@@ -60,7 +60,6 @@ function buildBestResults(allOutbound, allReturns, allRoundtrips) {
   return { bestOutbound, bestReturn, bestCombo, bestRoundtrip, bestOverall };
 }
 
-// Evaluar si toca alerta (cooldown 24h o baja >$500 MXN)
 async function evaluateAlert(env, currentPrice) {
   const budgetCompraYa = parseInt(env.BUDGET_COMPRA_YA || '11000');
   const budgetBuenPrecio = parseInt(env.BUDGET_BUEN_PRECIO || '14000');
@@ -177,7 +176,7 @@ function normalizeIngestedFlight(flight, type) {
     stops: flight.stops ?? 0,
     duration_h: flight.duration_h ?? 0,
     price_usd: flight.price_usd,
-    deep_link: flight.deep_link || `https://www.google.com/travel/flights?q=flights+from+${flight.from}+to+${flight.to}`,
+    deep_link: flight.deep_link || `https://www.google.com/travel/flights?q=flights+from+${flight.from}+to+${flight.to}+on+${(flight.departure || '').slice(0, 10)}`,
     is_best: flight.is_best || false,
     ...(type === 'roundtrip' ? { type: 'roundtrip' } : {}),
   };
@@ -289,18 +288,17 @@ function processRoundtripResults(serpData) {
   const flights = [];
   const bestFlights = serpData?.best_flights || [];
   const otherFlights = serpData?.other_flights || [];
-  const allFlights = [...bestFlights, ...otherFlights];
 
-  for (const flight of allFlights.slice(0, 10)) {
+  for (const flight of [...bestFlights, ...otherFlights].slice(0, 10)) {
     const legs = flight.flights || [];
     if (!legs.length) continue;
 
     const firstLeg = legs[0];
     const lastLeg = legs[legs.length - 1];
     const airlines = [...new Set(legs.map(l => l.airline))].join(', ');
-    const stops = legs.length - 1;
     const fromCode = firstLeg.departure_airport?.id || '';
     const toCode = lastLeg.arrival_airport?.id || '';
+    const depTime = firstLeg.departure_airport?.time || '';
 
     flights.push({
       id: `rt-${fromCode}-${toCode}-${flight.price}-${firstLeg.flight_number || ''}`,
@@ -309,12 +307,12 @@ function processRoundtripResults(serpData) {
       to: toCode,
       to_city: lastLeg.arrival_airport?.name || toCode,
       airlines,
-      departure: firstLeg.departure_airport?.time || '',
+      departure: depTime,
       arrival: lastLeg.arrival_airport?.time || '',
-      stops,
+      stops: legs.length - 1,
       duration_h: Math.round((flight.total_duration || 0) / 60 * 10) / 10,
       price_usd: flight.price || 0,
-      deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}`,
+      deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}+on+${depTime.slice(0, 10)}`,
       is_best: bestFlights.includes(flight),
       type: 'roundtrip',
     });
@@ -328,18 +326,17 @@ function processResults(serpData) {
   const flights = [];
   const bestFlights = serpData?.best_flights || [];
   const otherFlights = serpData?.other_flights || [];
-  const allFlights = [...bestFlights, ...otherFlights];
 
-  for (const flight of allFlights.slice(0, 15)) {
+  for (const flight of [...bestFlights, ...otherFlights].slice(0, 15)) {
     const legs = flight.flights || [];
     if (!legs.length) continue;
 
     const firstLeg = legs[0];
     const lastLeg = legs[legs.length - 1];
     const airlines = [...new Set(legs.map(l => l.airline))].join(', ');
-    const stops = legs.length - 1;
     const fromCode = firstLeg.departure_airport?.id || '';
     const toCode = lastLeg.arrival_airport?.id || '';
+    const depTime = firstLeg.departure_airport?.time || '';
 
     flights.push({
       id: `${fromCode}-${toCode}-${flight.price}-${firstLeg.flight_number || ''}`,
@@ -348,12 +345,12 @@ function processResults(serpData) {
       to: toCode,
       to_city: lastLeg.arrival_airport?.name || toCode,
       airlines,
-      departure: firstLeg.departure_airport?.time || '',
+      departure: depTime,
       arrival: lastLeg.arrival_airport?.time || '',
-      stops,
+      stops: legs.length - 1,
       duration_h: Math.round((flight.total_duration || 0) / 60 * 10) / 10,
       price_usd: flight.price || 0,
-      deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}`,
+      deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}+on+${depTime.slice(0, 10)}`,
       is_best: bestFlights.includes(flight),
     });
   }
@@ -516,7 +513,7 @@ export default {
         endpoints: [
           'GET  /api/latest',
           'GET  /api/history',
-          'POST /api/ingest  (n8n — recommended)',
+          'POST /api/ingest  (n8n \u2014 recommended)',
           'GET  /api/refresh?key=<secret>  (SerpAPI fallback)',
         ],
       }), {
