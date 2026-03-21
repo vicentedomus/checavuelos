@@ -3,3 +3,4 @@ test-results/
 .wrangler/
 cv_payload.json
 test-search.py
+tests/*.png
