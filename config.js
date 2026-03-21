@@ -5,4 +5,5 @@ const CONFIG = {
   BUDGET_NORMAL_MAX: 18000,
   PASSENGERS: 2,
   CURRENCY: 'MXN',
+  REFRESH_SECRET: 'checavuelos2026',
 };

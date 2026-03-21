@@ -80,15 +80,15 @@
 
     // Ida
     const ob = combo.outbound;
-    $('#hero-out-route').textContent = `${ob.from} → ${ob.to}`;
-    $('#hero-out-info').textContent = `${ob.airlines} · ${ob.stops} escala(s) · ${ob.duration_h}h · ${formatPrice(ob.price_usd)}`;
+    $('#hero-out-route').textContent = `${ob.from} \u2192 ${ob.to}`;
+    $('#hero-out-info').textContent = `${ob.airlines} \u00b7 ${ob.stops} escala(s) \u00b7 ${ob.duration_h}h \u00b7 ${formatPrice(ob.price_usd)}`;
     $('#hero-out-date').textContent = formatDate(ob.departure);
     $('#hero-out-link').href = ob.deep_link;
 
     // Vuelta
     const ret = combo.return;
-    $('#hero-ret-route').textContent = `${ret.from} → ${ret.to}`;
-    $('#hero-ret-info').textContent = `${ret.airlines} · ${ret.stops} escala(s) · ${ret.duration_h}h · ${formatPrice(ret.price_usd)}`;
+    $('#hero-ret-route').textContent = `${ret.from} \u2192 ${ret.to}`;
+    $('#hero-ret-info').textContent = `${ret.airlines} \u00b7 ${ret.stops} escala(s) \u00b7 ${ret.duration_h}h \u00b7 ${formatPrice(ret.price_usd)}`;
     $('#hero-ret-date').textContent = formatDate(ret.departure);
     $('#hero-ret-link').href = ret.deep_link;
   }
@@ -112,7 +112,10 @@
         <td>${f.stops}</td>
         <td>${f.duration_h}h</td>
         <td class="price ${level}">${formatPrice(f.price_usd)}</td>
-        <td><a href="${f.deep_link}" target="_blank" class="btn btn-sm">Ver</a></td>
+        <td>
+          <a href="${f.deep_link}" target="_blank" class="btn btn-sm">GFlights</a>
+          ${f.kayak_link ? `<a href="${f.kayak_link}" target="_blank" class="btn btn-sm btn-kayak">Kayak</a>` : ''}
+        </td>
       </tr>`;
     }).join('');
   }
@@ -135,7 +138,10 @@
         <td>${f.stops}</td>
         <td>${f.duration_h}h</td>
         <td class="price ${level}">${formatPrice(f.price_usd)}</td>
-        <td><a href="${f.deep_link}" target="_blank" class="btn btn-sm">Ver</a></td>
+        <td>
+          <a href="${f.deep_link}" target="_blank" class="btn btn-sm">GFlights</a>
+          ${f.kayak_link ? `<a href="${f.kayak_link}" target="_blank" class="btn btn-sm btn-kayak">Kayak</a>` : ''}
+        </td>
       </tr>`;
     }).join('');
   }
@@ -168,96 +174,34 @@
       data: {
         labels,
         datasets: [
-          {
-            label: 'Total ida+vuelta',
-            data: totals,
-            borderColor: '#2b6cb0',
-            backgroundColor: 'rgba(43,108,176,0.1)',
-            fill: true,
-            tension: 0.3,
-            pointRadius: 3,
-          },
-          {
-            label: 'Ida',
-            data: outbound,
-            borderColor: '#38a169',
-            borderDash: [5, 5],
-            tension: 0.3,
-            pointRadius: 2,
-          },
-          {
-            label: 'Vuelta',
-            data: returns,
-            borderColor: '#e53e3e',
-            borderDash: [5, 5],
-            tension: 0.3,
-            pointRadius: 2,
-          },
-          {
-            label: 'Round-trip',
-            data: roundtrips,
-            borderColor: '#805ad5',
-            backgroundColor: 'rgba(128,90,213,0.1)',
-            tension: 0.3,
-            pointRadius: 3,
-            spanGaps: true,
-          },
+          { label: 'Total ida+vuelta', data: totals, borderColor: '#2b6cb0', backgroundColor: 'rgba(43,108,176,0.1)', fill: true, tension: 0.3, pointRadius: 3 },
+          { label: 'Ida', data: outbound, borderColor: '#38a169', borderDash: [5, 5], tension: 0.3, pointRadius: 2 },
+          { label: 'Vuelta', data: returns, borderColor: '#e53e3e', borderDash: [5, 5], tension: 0.3, pointRadius: 2 },
+          { label: 'Round-trip', data: roundtrips, borderColor: '#805ad5', backgroundColor: 'rgba(128,90,213,0.1)', tension: 0.3, pointRadius: 3, spanGaps: true },
         ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: {
-          annotation: undefined,
-          legend: {
-            position: 'bottom',
-          },
-        },
-        scales: {
-          y: {
-            beginAtZero: false,
-            ticks: {
-              callback: (v) => '$' + v.toLocaleString('es-MX'),
-            },
-          },
-        },
+        plugins: { legend: { position: 'bottom' } },
+        scales: { y: { beginAtZero: false, ticks: { callback: (v) => '$' + v.toLocaleString('es-MX') } } },
       },
       plugins: [{
         id: 'thresholdLines',
         afterDraw(chart) {
           const yScale = chart.scales.y;
           const ctx = chart.ctx;
-
           const yCompra = yScale.getPixelForValue(CONFIG.BUDGET_COMPRA_YA);
           if (yCompra >= yScale.top && yCompra <= yScale.bottom) {
-            ctx.save();
-            ctx.strokeStyle = '#e53e3e';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([4, 4]);
-            ctx.beginPath();
-            ctx.moveTo(chart.chartArea.left, yCompra);
-            ctx.lineTo(chart.chartArea.right, yCompra);
-            ctx.stroke();
-            ctx.fillStyle = '#e53e3e';
-            ctx.font = '11px sans-serif';
-            ctx.fillText('$11,000 COMPRA YA', chart.chartArea.left + 4, yCompra - 4);
-            ctx.restore();
+            ctx.save(); ctx.strokeStyle = '#e53e3e'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+            ctx.beginPath(); ctx.moveTo(chart.chartArea.left, yCompra); ctx.lineTo(chart.chartArea.right, yCompra); ctx.stroke();
+            ctx.fillStyle = '#e53e3e'; ctx.font = '11px sans-serif'; ctx.fillText('$11,000 COMPRA YA', chart.chartArea.left + 4, yCompra - 4); ctx.restore();
           }
-
           const yBuen = yScale.getPixelForValue(CONFIG.BUDGET_BUEN_PRECIO);
           if (yBuen >= yScale.top && yBuen <= yScale.bottom) {
-            ctx.save();
-            ctx.strokeStyle = '#38a169';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([4, 4]);
-            ctx.beginPath();
-            ctx.moveTo(chart.chartArea.left, yBuen);
-            ctx.lineTo(chart.chartArea.right, yBuen);
-            ctx.stroke();
-            ctx.fillStyle = '#38a169';
-            ctx.font = '11px sans-serif';
-            ctx.fillText('$14,000 Buen precio', chart.chartArea.left + 4, yBuen - 4);
-            ctx.restore();
+            ctx.save(); ctx.strokeStyle = '#38a169'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+            ctx.beginPath(); ctx.moveTo(chart.chartArea.left, yBuen); ctx.lineTo(chart.chartArea.right, yBuen); ctx.stroke();
+            ctx.fillStyle = '#38a169'; ctx.font = '11px sans-serif'; ctx.fillText('$14,000 Buen precio', chart.chartArea.left + 4, yBuen - 4); ctx.restore();
           }
         },
       }],
@@ -272,7 +216,6 @@
         fetch(`${CONFIG.WORKER_URL}/api/latest`),
         fetch(`${CONFIG.WORKER_URL}/api/history`),
       ]);
-
       if (latestRes.ok) {
         const latest = await latestRes.json();
         const source = latest.source === 'n8n' ? 'via n8n' : latest.source === 'serpapi' ? 'via SerpAPI' : '';
@@ -285,11 +228,7 @@
         $('#updated').textContent = 'Sin datos disponibles';
         $('#no-data').classList.remove('hidden');
       }
-
-      if (historyRes.ok) {
-        const history = await historyRes.json();
-        renderChart(history);
-      }
+      if (historyRes.ok) { renderChart(await historyRes.json()); }
     } catch (err) {
       console.error('Error cargando datos:', err);
       $('#updated').textContent = 'Error al conectar con el servidor';
@@ -297,49 +236,29 @@
     }
   }
 
-  // --- Countdown a siguiente actualizacion ---
-  // n8n: martes y viernes a las 08:00 UTC (2:00 AM Merida)
+  // --- Countdown ---
   function startCountdown() {
     function getNextRun() {
       const now = new Date();
-      const RUN_DAYS = [2, 5]; // martes, viernes
-
-      // Buscar el proximo dia de ejecucion
+      const RUN_DAYS = [2, 5];
       for (let offset = 0; offset <= 7; offset++) {
         const candidate = new Date(now);
         candidate.setUTCDate(now.getUTCDate() + offset);
         candidate.setUTCHours(8, 0, 0, 0);
-        if (candidate > now && RUN_DAYS.includes(candidate.getUTCDay())) {
-          return candidate;
-        }
+        if (candidate > now && RUN_DAYS.includes(candidate.getUTCDay())) return candidate;
       }
-      // Fallback: proximo martes
       const next = new Date(now);
-      const daysUntil = (2 - now.getUTCDay() + 7) % 7 || 7;
-      next.setUTCDate(now.getUTCDate() + daysUntil);
+      next.setUTCDate(now.getUTCDate() + ((2 - now.getUTCDay() + 7) % 7 || 7));
       next.setUTCHours(8, 0, 0, 0);
       return next;
     }
-
     function updateCountdown() {
-      const next = getNextRun();
-      const diff = next - Date.now();
-      if (diff <= 0) {
-        $('#countdown').textContent = 'Actualizando...';
-        return;
-      }
-      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-      const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-
-      let parts = [];
-      if (days > 0) parts.push(`${days}d`);
-      if (hours > 0) parts.push(`${hours}h`);
-      parts.push(`${mins}m`);
-
+      const diff = getNextRun() - Date.now();
+      if (diff <= 0) { $('#countdown').textContent = 'Actualizando...'; return; }
+      const d = Math.floor(diff / 86400000), h = Math.floor((diff % 86400000) / 3600000), m = Math.floor((diff % 3600000) / 60000);
+      let parts = []; if (d > 0) parts.push(`${d}d`); if (h > 0) parts.push(`${h}h`); parts.push(`${m}m`);
       $('#countdown').textContent = `Siguiente busqueda en ${parts.join(' ')}`;
     }
-
     updateCountdown();
     setInterval(updateCountdown, 60000);
   }
@@ -348,16 +267,45 @@
   function updateWeddingCountdown() {
     const el = $('#wedding-countdown');
     if (!el) return;
-    const wedding = new Date('2026-10-01T00:00:00');
-    const diff = wedding - Date.now();
-    if (diff <= 0) {
-      el.textContent = '0';
-      return;
-    }
-    el.textContent = Math.ceil(diff / (1000 * 60 * 60 * 24));
+    const diff = new Date('2026-10-01T00:00:00') - Date.now();
+    el.textContent = diff <= 0 ? '0' : Math.ceil(diff / 86400000);
+  }
+
+  // --- Boton Actualizar ---
+  function setupRefreshButton() {
+    const btn = $('#btn-refresh');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      const icon = $('#refresh-icon');
+      const text = $('#refresh-text');
+      btn.disabled = true;
+      icon.style.animation = 'spin 1s linear infinite';
+      if (text) text.textContent = 'Buscando...';
+      try {
+        const res = await fetch(`${CONFIG.WORKER_URL}/api/refresh?key=${CONFIG.REFRESH_SECRET}`);
+        const data = await res.json();
+        if (res.status === 429) {
+          if (text) text.textContent = `En ${data.hours_left || '?'}h`;
+          setTimeout(() => { if (text) text.textContent = 'Actualizar'; }, 5000);
+        } else if (res.ok) {
+          if (text) text.textContent = 'Listo!';
+          setTimeout(() => { loadData(); if (text) text.textContent = 'Actualizar'; }, 1000);
+        } else {
+          if (text) text.textContent = 'Error';
+          setTimeout(() => { if (text) text.textContent = 'Actualizar'; }, 3000);
+        }
+      } catch {
+        if (text) text.textContent = 'Error';
+        setTimeout(() => { if (text) text.textContent = 'Actualizar'; }, 3000);
+      } finally {
+        icon.style.animation = '';
+        btn.disabled = false;
+      }
+    });
   }
 
   loadData();
   startCountdown();
   updateWeddingCountdown();
+  setupRefreshButton();
 })();
