@@ -1,21 +1,21 @@
 name = "checavuelos-api"
 main = "index.js"
 compatibility_date = "2024-01-01"
+account_id = "f657ac63c80efd60ceee8628b366e2d6"
 
 [triggers]
-crons = ["0 8 * * 2"]  # Martes 8am UTC (2am Merida). 16 calls/ejecucion × ~4/mes = 64/mes de 100 gratis
+crons = ["0 8 * * 2"]  # Fallback: solo corre si SERPAPI_KEY esta configurada
 
 [vars]
-ALLOWED_ORIGIN = "https://vicentedomus.github.io"
-ALERT_EMAIL = "vichomiguel@hotmail.com"
-BUDGET_COMPRA_YA = "750"
-BUDGET_BUEN_PRECIO = "900"
+ALLOWED_ORIGIN = "https://vicentedomus.github.io/checavuelos"
+BUDGET_COMPRA_YA = "11000"
+BUDGET_BUEN_PRECIO = "14000"
 REFRESH_SECRET = "checavuelos2026"
 
 [[kv_namespaces]]
 binding = "FLIGHTS_KV"
-id = "cd4c6944fd844b7b95ac5ce167bbfd64"
+id = "26da7a6c6ffb434ca8bad9f70d14fcbe"
 
 # Secrets (configurar via CLI):
-#   wrangler secret put SERPAPI_KEY
-#   wrangler secret put RESEND_API_KEY
+#   wrangler secret put INGEST_SECRET   (token compartido con n8n)
+#   wrangler secret put SERPAPI_KEY      (opcional, solo para fallback)

@@ -1,16 +1,15 @@
 // Cloudflare Worker: monitor de precios de vuelos
 // Soporta dos fuentes de datos:
-//   1. n8n/Make via POST /api/ingest (recomendado - sin limites de API)
-//   2. SerpAPI via cron/refresh (legacy - 100 calls/mes gratis)
+//   1. n8n via POST /api/ingest (recomendado)
+//   2. SerpAPI via cron/refresh (fallback)
 //
 // Secrets necesarios:
-//   wrangler secret put INGEST_SECRET   (para autenticar POST desde n8n)
-//   wrangler secret put RESEND_API_KEY  (para alertas email)
-//   wrangler secret put SERPAPI_KEY     (opcional, solo si usas SerpAPI)
+//   wrangler secret put INGEST_SECRET
+//   wrangler secret put SERPAPI_KEY  (opcional, solo si usas el cron fallback)
 
 const SERPAPI_URL = 'https://serpapi.com/search';
 
-// Configuracion de busqueda (usada por SerpAPI y como referencia para n8n)
+// Configuracion de busqueda
 const DESTINATIONS = 'FCO,FLR,PSA,MXP,CDG,ORY';
 const RETURN_ORIGINS = 'FCO,FLR,PSA,MXP,BGY,NAP,VCE';
 const ORIGINS = ['MID', 'CUN'];
@@ -19,7 +18,7 @@ const RETURN_DATES = ['2026-10-12', '2026-10-13', '2026-10-14'];
 const RT_OUTBOUND = '2026-09-25';
 const RT_RETURN = '2026-10-12';
 
-// --- Procesamiento de vuelos (compartido entre ambos approaches) ---
+// --- Procesamiento compartido ---
 
 function deduplicateFlights(flights) {
   const seen = new Map();
@@ -61,11 +60,51 @@ function buildBestResults(allOutbound, allReturns, allRoundtrips) {
   return { bestOutbound, bestReturn, bestCombo, bestRoundtrip, bestOverall };
 }
 
+// Evaluar si toca alerta (cooldown 24h o baja >$500 MXN)
+async function evaluateAlert(env, currentPrice) {
+  const budgetCompraYa = parseInt(env.BUDGET_COMPRA_YA || '11000');
+  const budgetBuenPrecio = parseInt(env.BUDGET_BUEN_PRECIO || '14000');
+
+  if (currentPrice > budgetBuenPrecio) return null;
+
+  let alertsData = {};
+  try {
+    const stored = await env.FLIGHTS_KV.get('alerts_sent', 'json');
+    if (stored) alertsData = stored;
+  } catch { /* primera vez */ }
+
+  const now = Date.now();
+  const lastSent = alertsData.last_sent || 0;
+  const lastPrice = alertsData.last_price || Infinity;
+  const hoursSinceLast = (now - lastSent) / (1000 * 60 * 60);
+
+  if (hoursSinceLast < 24 && (lastPrice - currentPrice) < 500) return null;
+
+  return currentPrice <= budgetCompraYa ? 'COMPRA_YA' : 'BUEN_PRECIO';
+}
+
+async function markAlertSent(env, price, level) {
+  await env.FLIGHTS_KV.put('alerts_sent', JSON.stringify({
+    last_sent: Date.now(),
+    last_price: price,
+    level,
+  }));
+}
+
 async function storeResults(env, allOutbound, allReturns, allRoundtrips, source, extraMeta = {}) {
   const { bestOutbound, bestReturn, bestCombo, bestRoundtrip, bestOverall } =
     buildBestResults(allOutbound, allReturns, allRoundtrips);
 
   const now = new Date().toISOString();
+
+  const alertPrice = bestOverall?.price_per_person || null;
+  let alertLevel = null;
+  if (alertPrice) {
+    alertLevel = await evaluateAlert(env, alertPrice);
+    if (alertLevel) {
+      await markAlertSent(env, alertPrice, alertLevel);
+    }
+  }
 
   const latest = {
     updated_at: now,
@@ -111,29 +150,10 @@ async function storeResults(env, allOutbound, allReturns, allRoundtrips, source,
   if (history.length > 300) history = history.slice(-300);
   await env.FLIGHTS_KV.put('history', JSON.stringify(history));
 
-  // Alertas
-  const alertPrice = bestOverall?.price_per_person || null;
-  if (alertPrice) {
-    const alertLevel = await shouldSendAlert(env, alertPrice);
-    if (alertLevel) {
-      if (bestOverall.source === 'one-way' && bestCombo) {
-        await sendAlert(env, alertLevel, bestCombo);
-      } else if (bestRoundtrip) {
-        await sendAlert(env, alertLevel, {
-          outbound: bestRoundtrip,
-          return: { ...bestRoundtrip, from: bestRoundtrip.to, to: bestRoundtrip.from,
-            from_city: bestRoundtrip.to_city, to_city: bestRoundtrip.from_city },
-          total_per_person: bestRoundtrip.price_usd,
-          total_2_passengers: bestRoundtrip.price_usd * 2,
-        });
-      }
-    }
-  }
-
-  return latest;
+  return { latest, alertLevel };
 }
 
-// --- Ingest: recibir datos desde n8n/Make ---
+// --- Ingest: recibir datos desde n8n ---
 
 function validateFlightData(flight) {
   const required = ['from', 'to', 'airlines', 'price_usd'];
@@ -159,7 +179,6 @@ function normalizeIngestedFlight(flight, type) {
     price_usd: flight.price_usd,
     deep_link: flight.deep_link || `https://www.google.com/travel/flights?q=flights+from+${flight.from}+to+${flight.to}`,
     is_best: flight.is_best || false,
-    carbon_emissions: flight.carbon_emissions || null,
     ...(type === 'roundtrip' ? { type: 'roundtrip' } : {}),
   };
 }
@@ -170,7 +189,6 @@ async function handleIngest(request, env) {
     return { error: 'INGEST_SECRET not configured on worker', status: 500 };
   }
 
-  // Auth: Bearer token or query param
   const authHeader = request.headers.get('Authorization') || '';
   const url = new URL(request.url);
   const queryKey = url.searchParams.get('key');
@@ -187,13 +205,6 @@ async function handleIngest(request, env) {
     return { error: 'Invalid JSON body', status: 400 };
   }
 
-  // Formato esperado:
-  // {
-  //   outbound: [{ from, to, airlines, price_usd, ... }],
-  //   returns: [{ from, to, airlines, price_usd, ... }],
-  //   roundtrips: [{ from, to, airlines, price_usd, ... }]  // opcional
-  // }
-
   const rawOutbound = body.outbound || [];
   const rawReturns = body.returns || [];
   const rawRoundtrips = body.roundtrips || [];
@@ -202,7 +213,6 @@ async function handleIngest(request, env) {
     return { error: 'No flight data provided. Expected: { outbound: [...], returns: [...], roundtrips: [...] }', status: 400 };
   }
 
-  // Validar y normalizar
   const errors = [];
   const outbound = [];
   const returns = [];
@@ -221,33 +231,31 @@ async function handleIngest(request, env) {
     roundtrips.push(normalizeIngestedFlight(f, 'roundtrip'));
   }
 
-  // Dedup y ordenar
   const dedupOutbound = deduplicateFlights(outbound).slice(0, 15);
   const dedupReturns = deduplicateFlights(returns).slice(0, 15);
   const dedupRoundtrips = deduplicateFlights(roundtrips).slice(0, 10);
 
-  const latest = await storeResults(env, dedupOutbound, dedupReturns, dedupRoundtrips, 'n8n', {
+  const { latest, alertLevel } = await storeResults(env, dedupOutbound, dedupReturns, dedupRoundtrips, 'n8n', {
     ingested_at: new Date().toISOString(),
-    ingested_counts: {
-      outbound: { received: rawOutbound.length, valid: outbound.length, after_dedup: dedupOutbound.length },
-      returns: { received: rawReturns.length, valid: returns.length, after_dedup: dedupReturns.length },
-      roundtrips: { received: rawRoundtrips.length, valid: roundtrips.length, after_dedup: dedupRoundtrips.length },
-    },
-    validation_errors: errors.length ? errors : undefined,
   });
 
   return {
     data: {
       message: 'Flight data ingested successfully',
-      counts: latest.ingested_counts,
+      counts: {
+        outbound: { received: rawOutbound.length, valid: outbound.length, after_dedup: dedupOutbound.length },
+        returns: { received: rawReturns.length, valid: returns.length, after_dedup: dedupReturns.length },
+        roundtrips: { received: rawRoundtrips.length, valid: roundtrips.length, after_dedup: dedupRoundtrips.length },
+      },
       best_overall: latest.best_overall,
+      alert_level: alertLevel,
       errors: errors.length ? errors : undefined,
     },
     status: 200,
   };
 }
 
-// --- SerpAPI search (legacy) ---
+// --- SerpAPI search (fallback) ---
 
 async function searchFlights(config, apiKey) {
   const params = new URLSearchParams({
@@ -347,7 +355,6 @@ function processResults(serpData) {
       price_usd: flight.price || 0,
       deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}`,
       is_best: bestFlights.includes(flight),
-      carbon_emissions: flight.carbon_emissions?.this_flight || null,
     });
   }
 
@@ -422,104 +429,17 @@ async function runSearch(env) {
   }
   allRoundtrips = deduplicateFlights(allRoundtrips).slice(0, 10);
 
-  return storeResults(env, allOutbound, allReturns, allRoundtrips, 'serpapi', {
+  const { latest } = await storeResults(env, allOutbound, allReturns, allRoundtrips, 'serpapi', {
     api_calls_used: totalCalls,
   });
-}
 
-// --- Alertas email via Resend ---
-
-async function shouldSendAlert(env, currentPrice) {
-  const budgetCompraYa = parseInt(env.BUDGET_COMPRA_YA || '11000');
-  const budgetBuenPrecio = parseInt(env.BUDGET_BUEN_PRECIO || '14000');
-
-  if (currentPrice > budgetBuenPrecio) return null;
-
-  let alertsData = {};
-  try {
-    const stored = await env.FLIGHTS_KV.get('alerts_sent', 'json');
-    if (stored) alertsData = stored;
-  } catch { /* primera vez */ }
-
-  const now = Date.now();
-  const lastSent = alertsData.last_sent || 0;
-  const lastPrice = alertsData.last_price || Infinity;
-  const hoursSinceLast = (now - lastSent) / (1000 * 60 * 60);
-
-  if (hoursSinceLast < 24 && (lastPrice - currentPrice) < 50) return null;
-
-  return currentPrice <= budgetCompraYa ? 'COMPRA_YA' : 'BUEN_PRECIO';
-}
-
-async function sendAlert(env, level, bestCombo) {
-  const apiKey = env.RESEND_API_KEY;
-  if (!apiKey) return;
-
-  const isUrgent = level === 'COMPRA_YA';
-  const emoji = isUrgent ? '\ud83d\udea8' : '\u2708\ufe0f';
-  const levelText = isUrgent ? 'COMPRA YA' : 'Buen precio';
-  const color = isUrgent ? '#e53e3e' : '#38a169';
-
-  const totalPerPerson = bestCombo.total_per_person;
-  const total2 = bestCombo.total_2_passengers;
-  const ob = bestCombo.outbound;
-  const ret = bestCombo.return;
-
-  const html = `
-    <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-      <h1 style="color:${color}">${emoji} ${levelText}: $${totalPerPerson.toLocaleString('es-MX')}/persona</h1>
-      <p style="font-size:18px">Total para 2 pasajeros: <strong>$${total2.toLocaleString('es-MX')} MXN</strong></p>
-      <hr>
-      <h3>\u2708\ufe0f Ida</h3>
-      <p><strong>${ob.from_city} (${ob.from}) \u2192 ${ob.to_city} (${ob.to})</strong></p>
-      <p>${ob.airlines} \u00b7 ${ob.stops} escala(s) \u00b7 ${ob.duration_h}h</p>
-      <p>Salida: ${ob.departure}</p>
-      <p>Precio: <strong>$${ob.price_usd.toLocaleString('es-MX')} MXN</strong></p>
-      <a href="${ob.deep_link}" style="display:inline-block;padding:10px 20px;background:${color};color:#fff;text-decoration:none;border-radius:5px">Buscar en Google Flights</a>
-      <hr>
-      <h3>\ud83d\udeec Vuelta</h3>
-      <p><strong>${ret.from_city} (${ret.from}) \u2192 ${ret.to_city} (${ret.to})</strong></p>
-      <p>${ret.airlines} \u00b7 ${ret.stops} escala(s) \u00b7 ${ret.duration_h}h</p>
-      <p>Salida: ${ret.departure}</p>
-      <p>Precio: <strong>$${ret.price_usd.toLocaleString('es-MX')} MXN</strong></p>
-      <a href="${ret.deep_link}" style="display:inline-block;padding:10px 20px;background:${color};color:#fff;text-decoration:none;border-radius:5px">Buscar en Google Flights</a>
-      <hr>
-      <p style="color:#888;font-size:12px">checavuelos \u00b7 Datos via n8n + Google Flights</p>
-    </div>
-  `;
-
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: 'checavuelos <onboarding@resend.dev>',
-      to: env.ALERT_EMAIL || 'vichomiguel@hotmail.com',
-      subject: `${emoji} ${levelText}: $${totalPerPerson.toLocaleString('es-MX')} MXN/persona - Vuelo a Italia`,
-      html,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    console.error('Resend error:', err);
-    return;
-  }
-
-  await env.FLIGHTS_KV.put('alerts_sent', JSON.stringify({
-    last_sent: Date.now(),
-    last_price: totalPerPerson,
-    level,
-  }));
+  return latest;
 }
 
 // --- Request Handler ---
 
 export default {
   async scheduled(event, env, ctx) {
-    // Solo ejecuta si hay SERPAPI_KEY configurada (legacy)
     if (env.SERPAPI_KEY) {
       ctx.waitUntil(runSearch(env));
     }
@@ -554,7 +474,7 @@ export default {
       if (path === '/api/latest') {
         const data = await env.FLIGHTS_KV.get('latest');
         if (!data) {
-          return new Response(JSON.stringify({ error: 'No data yet. Trigger a refresh or send data via POST /api/ingest.' }), {
+          return new Response(JSON.stringify({ error: 'No data yet. Send data via POST /api/ingest.' }), {
             status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
@@ -570,7 +490,6 @@ export default {
         });
       }
 
-      // n8n/Make ingest endpoint
       if (path === '/api/ingest' && request.method === 'POST') {
         const result = await handleIngest(request, env);
         return new Response(JSON.stringify(result.data || { error: result.error }), {
@@ -579,7 +498,6 @@ export default {
         });
       }
 
-      // SerpAPI refresh (legacy)
       if (path === '/api/refresh') {
         const key = url.searchParams.get('key');
         if (key !== (env.REFRESH_SECRET || 'checavuelos2026')) {
@@ -598,8 +516,8 @@ export default {
         endpoints: [
           'GET  /api/latest',
           'GET  /api/history',
-          'POST /api/ingest  (n8n/Make - recommended)',
-          'GET  /api/refresh?key=<secret>  (SerpAPI legacy)',
+          'POST /api/ingest  (n8n — recommended)',
+          'GET  /api/refresh?key=<secret>  (SerpAPI fallback)',
         ],
       }), {
         status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' },

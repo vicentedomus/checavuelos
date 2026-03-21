@@ -228,35 +228,35 @@
           const yScale = chart.scales.y;
           const ctx = chart.ctx;
 
-          const y750 = yScale.getPixelForValue(CONFIG.BUDGET_COMPRA_YA);
-          if (y750 >= yScale.top && y750 <= yScale.bottom) {
+          const yCompra = yScale.getPixelForValue(CONFIG.BUDGET_COMPRA_YA);
+          if (yCompra >= yScale.top && yCompra <= yScale.bottom) {
             ctx.save();
             ctx.strokeStyle = '#e53e3e';
             ctx.lineWidth = 1;
             ctx.setLineDash([4, 4]);
             ctx.beginPath();
-            ctx.moveTo(chart.chartArea.left, y750);
-            ctx.lineTo(chart.chartArea.right, y750);
+            ctx.moveTo(chart.chartArea.left, yCompra);
+            ctx.lineTo(chart.chartArea.right, yCompra);
             ctx.stroke();
             ctx.fillStyle = '#e53e3e';
             ctx.font = '11px sans-serif';
-            ctx.fillText('$11,000 COMPRA YA', chart.chartArea.left + 4, y750 - 4);
+            ctx.fillText('$11,000 COMPRA YA', chart.chartArea.left + 4, yCompra - 4);
             ctx.restore();
           }
 
-          const y900 = yScale.getPixelForValue(CONFIG.BUDGET_BUEN_PRECIO);
-          if (y900 >= yScale.top && y900 <= yScale.bottom) {
+          const yBuen = yScale.getPixelForValue(CONFIG.BUDGET_BUEN_PRECIO);
+          if (yBuen >= yScale.top && yBuen <= yScale.bottom) {
             ctx.save();
             ctx.strokeStyle = '#38a169';
             ctx.lineWidth = 1;
             ctx.setLineDash([4, 4]);
             ctx.beginPath();
-            ctx.moveTo(chart.chartArea.left, y900);
-            ctx.lineTo(chart.chartArea.right, y900);
+            ctx.moveTo(chart.chartArea.left, yBuen);
+            ctx.lineTo(chart.chartArea.right, yBuen);
             ctx.stroke();
             ctx.fillStyle = '#38a169';
             ctx.font = '11px sans-serif';
-            ctx.fillText('$14,000 Buen precio', chart.chartArea.left + 4, y900 - 4);
+            ctx.fillText('$14,000 Buen precio', chart.chartArea.left + 4, yBuen - 4);
             ctx.restore();
           }
         },
@@ -298,15 +298,24 @@
   }
 
   // --- Countdown a siguiente actualizacion ---
+  // n8n: martes y viernes a las 08:00 UTC (2:00 AM Merida)
   function startCountdown() {
     function getNextRun() {
       const now = new Date();
-      // Schedule: daily at 2 AM Merida (8 AM UTC)
-      const next = new Date(now);
-      next.setUTCHours(8, 0, 0, 0);
-      if (next <= now) {
-        next.setUTCDate(next.getUTCDate() + 1);
+      const RUN_DAYS = [2, 5]; // martes, viernes
+
+      for (let offset = 0; offset <= 7; offset++) {
+        const candidate = new Date(now);
+        candidate.setUTCDate(now.getUTCDate() + offset);
+        candidate.setUTCHours(8, 0, 0, 0);
+        if (candidate > now && RUN_DAYS.includes(candidate.getUTCDay())) {
+          return candidate;
+        }
       }
+      const next = new Date(now);
+      const daysUntil = (2 - now.getUTCDay() + 7) % 7 || 7;
+      next.setUTCDate(now.getUTCDate() + daysUntil);
+      next.setUTCHours(8, 0, 0, 0);
       return next;
     }
 
