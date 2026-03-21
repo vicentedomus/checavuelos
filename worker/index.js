@@ -18,6 +18,58 @@ const RETURN_DATES = ['2026-10-12', '2026-10-13', '2026-10-14'];
 const RT_OUTBOUND = '2026-09-25';
 const RT_RETURN = '2026-10-12';
 
+// --- Google Flights deep link builder (protobuf tfs param) ---
+
+function encodeVarint(value) {
+  const bytes = [];
+  let v = value >>> 0;
+  if (v === 0) return [0];
+  while (v > 0) {
+    if (v > 0x7f) { bytes.push((v & 0x7f) | 0x80); v >>>= 7; }
+    else { bytes.push(v & 0x7f); v = 0; }
+  }
+  return bytes;
+}
+function encodeVarintField(fn, val) { return [...encodeVarint((fn << 3) | 0), ...encodeVarint(val)]; }
+function encodeLenDelim(fn, data) { return [...encodeVarint((fn << 3) | 2), ...encodeVarint(data.length), ...data]; }
+function encodeStrField(fn, str) { return encodeLenDelim(fn, Array.from(new TextEncoder().encode(str))); }
+function encodeAirport(fn, code) { return encodeLenDelim(fn, [...encodeVarintField(1, 1), ...encodeStrField(2, code)]); }
+
+function buildTfsParam(tripType, legs) {
+  let b = [...encodeVarintField(1, 28), ...encodeVarintField(2, tripType)];
+  for (const leg of legs) {
+    let lb = [...encodeStrField(2, leg.date)];
+    for (const o of [].concat(leg.origins)) lb.push(...encodeAirport(13, o));
+    for (const d of [].concat(leg.destinations)) lb.push(...encodeAirport(14, d));
+    b.push(...encodeLenDelim(3, lb));
+  }
+  b.push(...encodeVarintField(8, 1), ...encodeVarintField(9, 1), ...encodeVarintField(14, 1));
+  b.push(...encodeLenDelim(16, [0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]));
+  b.push(...encodeVarintField(19, 1));
+  const uint8 = new Uint8Array(b);
+  let binary = '';
+  for (const byte of uint8) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function buildOneWayLink(from, to, date) {
+  const tfs = buildTfsParam(2, [{ date, origins: from, destinations: to }]);
+  return `https://www.google.com/travel/flights/search?tfs=${tfs}&curr=MXN&hl=es&gl=mx`;
+}
+
+function buildRoundTripLink(from, to, outDate, retDate) {
+  const tfs = buildTfsParam(1, [
+    { date: outDate, origins: from, destinations: to },
+    { date: retDate, origins: to, destinations: from },
+  ]);
+  return `https://www.google.com/travel/flights/search?tfs=${tfs}&curr=MXN&hl=es&gl=mx`;
+}
+
+function extractDate(depTime) {
+  const match = (depTime || '').match(/\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : null;
+}
+
 // --- Procesamiento compartido ---
 
 function deduplicateFlights(flights) {
@@ -60,7 +112,6 @@ function buildBestResults(allOutbound, allReturns, allRoundtrips) {
   return { bestOutbound, bestReturn, bestCombo, bestRoundtrip, bestOverall };
 }
 
-// Evaluar si toca alerta (cooldown 24h o baja >$500 MXN)
 async function evaluateAlert(env, currentPrice) {
   const budgetCompraYa = parseInt(env.BUDGET_COMPRA_YA || '11000');
   const budgetBuenPrecio = parseInt(env.BUDGET_BUEN_PRECIO || '14000');
@@ -78,13 +129,11 @@ async function evaluateAlert(env, currentPrice) {
   const lastPrice = alertsData.last_price || Infinity;
   const hoursSinceLast = (now - lastSent) / (1000 * 60 * 60);
 
-  // Enviar si: han pasado 24h, O el precio bajo >$500 MXN del ultimo alertado
   if (hoursSinceLast < 24 && (lastPrice - currentPrice) < 500) return null;
 
   return currentPrice <= budgetCompraYa ? 'COMPRA_YA' : 'BUEN_PRECIO';
 }
 
-// Registrar que se envio alerta (n8n llama esto despues de enviar WhatsApp)
 async function markAlertSent(env, price, level) {
   await env.FLIGHTS_KV.put('alerts_sent', JSON.stringify({
     last_sent: Date.now(),
@@ -99,12 +148,10 @@ async function storeResults(env, allOutbound, allReturns, allRoundtrips, source,
 
   const now = new Date().toISOString();
 
-  // Evaluar alerta
   const alertPrice = bestOverall?.price_per_person || null;
   let alertLevel = null;
   if (alertPrice) {
     alertLevel = await evaluateAlert(env, alertPrice);
-    // Si hay alerta, marcar como enviada (n8n se encarga del WhatsApp)
     if (alertLevel) {
       await markAlertSent(env, alertPrice, alertLevel);
     }
@@ -132,7 +179,6 @@ async function storeResults(env, allOutbound, allReturns, allRoundtrips, source,
   };
   await env.FLIGHTS_KV.put('latest', JSON.stringify(latest));
 
-  // Actualizar history
   let history = [];
   try {
     const stored = await env.FLIGHTS_KV.get('history', 'json');
@@ -170,20 +216,24 @@ function validateFlightData(flight) {
 }
 
 function normalizeIngestedFlight(flight, type) {
+  const depDate = extractDate(flight.departure);
+  let deep_link = flight.deep_link;
+  if (!deep_link || deep_link.includes('?q=flights')) {
+    if (type === 'roundtrip' && depDate) {
+      deep_link = buildRoundTripLink(flight.from, flight.to, depDate, RT_RETURN);
+    } else if (depDate) {
+      deep_link = buildOneWayLink(flight.from, flight.to, depDate);
+    } else {
+      deep_link = buildOneWayLink(flight.from, flight.to, OUTBOUND_DATES[0]);
+    }
+  }
   return {
     id: flight.id || `${type}-${flight.from}-${flight.to}-${flight.price_usd}-${Date.now()}`,
-    from: flight.from,
-    from_city: flight.from_city || flight.from,
-    to: flight.to,
-    to_city: flight.to_city || flight.to,
-    airlines: flight.airlines,
-    departure: flight.departure || '',
-    arrival: flight.arrival || '',
-    stops: flight.stops ?? 0,
-    duration_h: flight.duration_h ?? 0,
-    price_usd: flight.price_usd,
-    deep_link: flight.deep_link || `https://www.google.com/travel/flights?q=flights+from+${flight.from}+to+${flight.to}+on+${(flight.departure || '').slice(0, 10)}`,
-    is_best: flight.is_best || false,
+    from: flight.from, from_city: flight.from_city || flight.from,
+    to: flight.to, to_city: flight.to_city || flight.to,
+    airlines: flight.airlines, departure: flight.departure || '', arrival: flight.arrival || '',
+    stops: flight.stops ?? 0, duration_h: flight.duration_h ?? 0, price_usd: flight.price_usd,
+    deep_link, is_best: flight.is_best || false,
     ...(type === 'roundtrip' ? { type: 'roundtrip' } : {}),
   };
 }
@@ -194,7 +244,6 @@ async function handleIngest(request, env) {
     return { error: 'INGEST_SECRET not configured on worker', status: 500 };
   }
 
-  // Auth: Bearer token o query param
   const authHeader = request.headers.get('Authorization') || '';
   const url = new URL(request.url);
   const queryKey = url.searchParams.get('key');
@@ -219,7 +268,6 @@ async function handleIngest(request, env) {
     return { error: 'No flight data provided. Expected: { outbound: [...], returns: [...], roundtrips: [...] }', status: 400 };
   }
 
-  // Validar y normalizar
   const errors = [];
   const outbound = [];
   const returns = [];
@@ -238,7 +286,6 @@ async function handleIngest(request, env) {
     roundtrips.push(normalizeIngestedFlight(f, 'roundtrip'));
   }
 
-  // Dedup y ordenar
   const dedupOutbound = deduplicateFlights(outbound).slice(0, 15);
   const dedupReturns = deduplicateFlights(returns).slice(0, 15);
   const dedupRoundtrips = deduplicateFlights(roundtrips).slice(0, 10);
@@ -297,9 +344,8 @@ function processRoundtripResults(serpData) {
   const flights = [];
   const bestFlights = serpData?.best_flights || [];
   const otherFlights = serpData?.other_flights || [];
-  const allFlights = [...bestFlights, ...otherFlights];
 
-  for (const flight of allFlights.slice(0, 10)) {
+  for (const flight of [...bestFlights, ...otherFlights].slice(0, 10)) {
     const legs = flight.flights || [];
     if (!legs.length) continue;
 
@@ -322,7 +368,7 @@ function processRoundtripResults(serpData) {
       stops,
       duration_h: Math.round((flight.total_duration || 0) / 60 * 10) / 10,
       price_usd: flight.price || 0,
-      deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}+on+${(firstLeg.departure_airport?.time || '').slice(0, 10)}`,
+      deep_link: buildRoundTripLink(fromCode, toCode, extractDate(firstLeg.departure_airport?.time) || RT_OUTBOUND, RT_RETURN),
       is_best: bestFlights.includes(flight),
       type: 'roundtrip',
     });
@@ -336,9 +382,8 @@ function processResults(serpData) {
   const flights = [];
   const bestFlights = serpData?.best_flights || [];
   const otherFlights = serpData?.other_flights || [];
-  const allFlights = [...bestFlights, ...otherFlights];
 
-  for (const flight of allFlights.slice(0, 15)) {
+  for (const flight of [...bestFlights, ...otherFlights].slice(0, 15)) {
     const legs = flight.flights || [];
     if (!legs.length) continue;
 
@@ -361,7 +406,7 @@ function processResults(serpData) {
       stops,
       duration_h: Math.round((flight.total_duration || 0) / 60 * 10) / 10,
       price_usd: flight.price || 0,
-      deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}+on+${(firstLeg.departure_airport?.time || '').slice(0, 10)}`,
+      deep_link: buildOneWayLink(fromCode, toCode, extractDate(firstLeg.departure_airport?.time) || OUTBOUND_DATES[0]),
       is_best: bestFlights.includes(flight),
     });
   }
@@ -447,7 +492,6 @@ async function runSearch(env) {
 // --- Request Handler ---
 
 export default {
-  // Cron fallback: solo ejecuta si hay SERPAPI_KEY configurada
   async scheduled(event, env, ctx) {
     if (env.SERPAPI_KEY) {
       ctx.waitUntil(runSearch(env));
@@ -499,7 +543,6 @@ export default {
         });
       }
 
-      // n8n ingest endpoint
       if (path === '/api/ingest' && request.method === 'POST') {
         const result = await handleIngest(request, env);
         return new Response(JSON.stringify(result.data || { error: result.error }), {
@@ -508,7 +551,6 @@ export default {
         });
       }
 
-      // SerpAPI refresh (fallback)
       if (path === '/api/refresh') {
         const key = url.searchParams.get('key');
         if (key !== (env.REFRESH_SECRET || 'checavuelos2026')) {
@@ -527,7 +569,7 @@ export default {
         endpoints: [
           'GET  /api/latest',
           'GET  /api/history',
-          'POST /api/ingest  (n8n — recommended)',
+          'POST /api/ingest  (n8n \u2014 recommended)',
           'GET  /api/refresh?key=<secret>  (SerpAPI fallback)',
         ],
       }), {
