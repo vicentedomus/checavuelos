@@ -52,18 +52,6 @@
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
-.btn-kayak {
-  background: #FF690F;
-  margin-left: 0.25rem;
-}
-.btn-kayak:hover {
-  background: #e55a00;
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
 
 table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 table th { text-align: left; padding: 0.7rem 0.8rem; border-bottom: 2px solid #556B2F; font-size: 0.6rem; text-transform: uppercase; letter-spacing: 1.8px; font-weight: 700; color: #556B2F; white-space: nowrap; }

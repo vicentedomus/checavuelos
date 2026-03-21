@@ -285,39 +285,6 @@
         const res = await fetch(`${CONFIG.WORKER_URL}/api/refresh?key=${CONFIG.REFRESH_SECRET}`);
         const data = await res.json();
         if (res.status === 429) {
-          if (text) text.textContent = `En ${data.hours_left || '?'}h`;
-          setTimeout(() => { if (text) text.textContent = 'Actualizar'; }, 5000);
-        } else if (res.ok) {
-          if (text) text.textContent = 'Listo!';
-          setTimeout(() => { loadData(); if (text) text.textContent = 'Actualizar'; }, 1000);
-        } else {
-          if (text) text.textContent = 'Error';
-          setTimeout(() => { if (text) text.textContent = 'Actualizar'; }, 3000);
-        }
-      } catch {
-        if (text) text.textContent = 'Error';
-        setTimeout(() => { if (text) text.textContent = 'Actualizar'; }, 3000);
-      } finally {
-        icon.style.animation = '';
-        btn.disabled = false;
-      }
-    });
-  }
-
-  // --- Boton Actualizar ---
-  function setupRefreshButton() {
-    const btn = $('#btn-refresh');
-    if (!btn) return;
-    btn.addEventListener('click', async () => {
-      const icon = $('#refresh-icon');
-      const text = $('#refresh-text');
-      btn.disabled = true;
-      icon.style.animation = 'spin 1s linear infinite';
-      if (text) text.textContent = 'Buscando...';
-      try {
-        const res = await fetch(`${CONFIG.WORKER_URL}/api/refresh?key=${CONFIG.REFRESH_SECRET}`);
-        const data = await res.json();
-        if (res.status === 429) {
           const h = data.hours_left || '?';
           if (text) text.textContent = `En ${h}h`;
           setTimeout(() => { if (text) text.textContent = 'Actualizar'; }, 5000);
@@ -338,8 +305,72 @@
     });
   }
 
+  // --- Google Flights protobuf URL builder (for "Buscar vuelos" button) ---
+  function encodeVarint(value) {
+    const bytes = []; let v = value >>> 0;
+    if (v === 0) return [0];
+    while (v > 0) { if (v > 0x7f) { bytes.push((v & 0x7f) | 0x80); v >>>= 7; } else { bytes.push(v & 0x7f); v = 0; } }
+    return bytes;
+  }
+  function encodeVarintField(fn, val) { return [...encodeVarint((fn << 3) | 0), ...encodeVarint(val)]; }
+  function encodeLenDelim(fn, data) { return [...encodeVarint((fn << 3) | 2), ...encodeVarint(data.length), ...data]; }
+  function encodeStrField(fn, str) { return encodeLenDelim(fn, Array.from(new TextEncoder().encode(str))); }
+  function encodeAirport(fn, code) { return encodeLenDelim(fn, [...encodeVarintField(1, 1), ...encodeStrField(2, code)]); }
+
+  function buildTfsParam(tripType, legs) {
+    let b = [...encodeVarintField(1, 28), ...encodeVarintField(2, tripType)];
+    for (const leg of legs) {
+      let lb = [...encodeStrField(2, leg.date)];
+      for (const o of [].concat(leg.origins)) lb.push(...encodeAirport(13, o));
+      for (const d of [].concat(leg.destinations)) lb.push(...encodeAirport(14, d));
+      b.push(...encodeLenDelim(3, lb));
+    }
+    b.push(...encodeVarintField(8, 1), ...encodeVarintField(9, 1), ...encodeVarintField(14, 1));
+    b.push(...encodeLenDelim(16, [0x08, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]));
+    b.push(...encodeVarintField(19, 1));
+    const uint8 = new Uint8Array(b);
+    let binary = '';
+    for (const byte of uint8) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function buildGFRoundTripUrl(origin, destinations, outDate, retDate) {
+    const tfs = buildTfsParam(1, [
+      { date: outDate, origins: origin, destinations },
+      { date: retDate, origins: destinations, destinations: origin },
+    ]);
+    return `https://www.google.com/travel/flights/search?tfs=${tfs}&curr=MXN&hl=es&gl=mx`;
+  }
+
+  // --- Boton "Buscar vuelos" — abre 16 tabs RT en Google Flights ---
+  function setupSearchAllButton() {
+    const btn = $('#btn-gf-all');
+    if (!btn) return;
+
+    const ORIGINS = ['MID', 'CUN'];
+    const DESTS = ['FCO', 'FLR', 'PSA', 'MXP', 'CDG', 'ORY'];
+    const OUT_DATES = ['2026-09-24', '2026-09-25', '2026-09-26', '2026-09-27'];
+    const RET_DATES = ['2026-10-12', '2026-10-13'];
+
+    btn.addEventListener('click', () => {
+      const urls = [];
+      for (const origin of ORIGINS) {
+        for (const outDate of OUT_DATES) {
+          for (const retDate of RET_DATES) {
+            urls.push(buildGFRoundTripUrl(origin, DESTS, outDate, retDate));
+          }
+        }
+      }
+      // Open with staggered delay to avoid browser blocking
+      urls.forEach((url, i) => {
+        setTimeout(() => window.open(url, '_blank'), i * 500);
+      });
+    });
+  }
+
   loadData();
   startCountdown();
   updateWeddingCountdown();
   setupRefreshButton();
+  setupSearchAllButton();
 })();
