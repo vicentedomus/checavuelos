@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1e3a5f"/>
+      <stop offset="100%" stop-color="#0f1f33"/>
+    </linearGradient>
+  </defs>
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <!-- Italy flag stripe - subtle at bottom -->
+  <rect x="0" y="448" width="171" height="64" rx="0" fill="#009246" opacity="0.85"/>
+  <rect x="171" y="448" width="170" height="64" fill="#ffffff" opacity="0.85"/>
+  <rect x="341" y="448" width="171" height="64" rx="0" fill="#CE2B37" opacity="0.85"/>
+  <!-- Round bottom corners mask -->
+  <rect x="0" y="448" width="96" height="64" fill="url(#bg)"/>
+  <rect x="0" y="448" width="96" height="64" rx="0 0 0 96" fill="#009246" opacity="0.85"/>
+  <rect x="416" y="448" width="96" height="64" fill="url(#bg)"/>
+  <rect x="416" y="448" width="96" height="64" rx="0 0 96 0" fill="#CE2B37" opacity="0.85"/>
+  <!-- Airplane -->
+  <g transform="translate(256,220) rotate(-30) scale(1.1)" fill="#ffffff">
+    <!-- Fuselage -->
+    <ellipse cx="0" cy="0" rx="120" ry="18" opacity="0.95"/>
+    <!-- Main wings -->
+    <path d="M-10,-12 L30,-90 L50,-88 L15,-12 Z" opacity="0.9"/>
+    <path d="M-10,12 L30,90 L50,88 L15,12 Z" opacity="0.9"/>
+    <!-- Tail -->
+    <path d="M-100,-15 L-120,-55 L-105,-52 L-85,-15 Z" opacity="0.85"/>
+    <path d="M-100,15 L-120,55 L-105,52 L-85,15 Z" opacity="0.85"/>
+    <!-- Tail fin -->
+    <path d="M-95,-18 L-115,-50 L-100,-48 L-82,-18 Z" opacity="0.0"/>
+  </g>
+  <!-- Price tag / check -->
+  <g transform="translate(380,100)">
+    <circle cx="0" cy="0" r="40" fill="#22c55e" opacity="0.9"/>
+    <path d="M-15,2 L-5,12 L18,-10" stroke="#ffffff" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

@@ -304,6 +304,40 @@
     });
   }
 
+  // --- Boton Actualizar ---
+  function setupRefreshButton() {
+    const btn = $('#btn-refresh');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      const icon = $('#refresh-icon');
+      const text = $('#refresh-text');
+      btn.disabled = true;
+      icon.style.animation = 'spin 1s linear infinite';
+      if (text) text.textContent = 'Buscando...';
+      try {
+        const res = await fetch(`${CONFIG.WORKER_URL}/api/refresh?key=${CONFIG.REFRESH_SECRET}`);
+        const data = await res.json();
+        if (res.status === 429) {
+          const h = data.hours_left || '?';
+          if (text) text.textContent = `En ${h}h`;
+          setTimeout(() => { if (text) text.textContent = 'Actualizar'; }, 5000);
+        } else if (res.ok) {
+          if (text) text.textContent = 'Listo!';
+          setTimeout(() => { loadData(); if (text) text.textContent = 'Actualizar'; }, 1000);
+        } else {
+          if (text) text.textContent = 'Error';
+          setTimeout(() => { if (text) text.textContent = 'Actualizar'; }, 3000);
+        }
+      } catch {
+        if (text) text.textContent = 'Error';
+        setTimeout(() => { if (text) text.textContent = 'Actualizar'; }, 3000);
+      } finally {
+        icon.style.animation = '';
+        btn.disabled = false;
+      }
+    });
+  }
+
   loadData();
   startCountdown();
   updateWeddingCountdown();

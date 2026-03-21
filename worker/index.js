@@ -268,7 +268,7 @@ export default {
   async scheduled(event, env, ctx) { if (env.SERPAPI_KEY) ctx.waitUntil(runSearch(env)); },
   async fetch(request, env) {
     const origin = request.headers.get('Origin') || '';
-    const allowedOrigins = [env.ALLOWED_ORIGIN || 'https://vicentedomus.github.io', 'http://127.0.0.1:5500', 'http://localhost:5500', 'http://127.0.0.1:5501', 'http://localhost:5501'];
+    const allowedOrigins = ['https://checavuelos.vercel.app', env.ALLOWED_ORIGIN || 'https://vicentedomus.github.io', 'http://127.0.0.1:5500', 'http://localhost:5500', 'http://127.0.0.1:5501', 'http://localhost:5501'];
     const matchedOrigin = allowedOrigins.find(o => origin.startsWith(o)) || allowedOrigins[0];
     const corsHeaders = { 'Access-Control-Allow-Origin': matchedOrigin, 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Max-Age': '86400' };
     if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
