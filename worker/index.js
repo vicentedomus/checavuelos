@@ -219,12 +219,14 @@ function normalizeIngestedFlight(flight, type) {
   const depDate = extractDate(flight.departure);
   let deep_link = flight.deep_link;
   if (!deep_link || deep_link.includes('?q=flights')) {
-    if (type === 'roundtrip' && depDate) {
-      deep_link = buildRoundTripLink(flight.from, flight.to, depDate, RT_RETURN);
-    } else if (depDate) {
-      deep_link = buildOneWayLink(flight.from, flight.to, depDate);
+    // Always round-trip: Google Flights ignores one-way type and defaults to RT with wrong return date
+    if (depDate) {
+      const isReturn = RETURN_DATES.includes(depDate);
+      const retDate = isReturn ? depDate : RT_RETURN;
+      const outDate = isReturn ? RT_OUTBOUND : depDate;
+      deep_link = buildRoundTripLink(isReturn ? flight.to : flight.from, isReturn ? flight.from : flight.to, outDate, retDate);
     } else {
-      deep_link = buildOneWayLink(flight.from, flight.to, OUTBOUND_DATES[0]);
+      deep_link = buildRoundTripLink(flight.from, flight.to, OUTBOUND_DATES[0], RT_RETURN);
     }
   }
   return {
@@ -406,7 +408,12 @@ function processResults(serpData) {
       stops,
       duration_h: Math.round((flight.total_duration || 0) / 60 * 10) / 10,
       price_usd: flight.price || 0,
-      deep_link: buildOneWayLink(fromCode, toCode, extractDate(firstLeg.departure_airport?.time) || OUTBOUND_DATES[0]),
+      deep_link: (() => {
+        const depDate = extractDate(firstLeg.departure_airport?.time);
+        const isReturn = depDate && RETURN_DATES.includes(depDate);
+        if (isReturn) return buildRoundTripLink(toCode, fromCode, RT_OUTBOUND, depDate);
+        return buildRoundTripLink(fromCode, toCode, depDate || OUTBOUND_DATES[0], RT_RETURN);
+      })(),
       is_best: bestFlights.includes(flight),
     });
   }
