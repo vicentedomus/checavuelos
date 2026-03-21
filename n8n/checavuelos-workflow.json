@@ -1,0 +1,266 @@
+{
+  "name": "checavuelos - Monitor de Precios",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8,
+              "triggerAtDay": {
+                "value": [2, 5]
+              }
+            }
+          ]
+        }
+      },
+      "id": "cv-schedule-001",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg-worker-url",
+              "name": "workerUrl",
+              "value": "https://checavuelos-api.vichomiguel.workers.dev",
+              "type": "string"
+            },
+            {
+              "id": "cfg-ingest-secret",
+              "name": "ingestSecret",
+              "value": "={{ $env.CHECAVUELOS_INGEST_SECRET }}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-serpapi-key",
+              "name": "serpApiKey",
+              "value": "={{ $env.SERPAPI_KEY }}",
+              "type": "string"
+            },
+            {
+              "id": "cfg-budget-compra",
+              "name": "budgetCompraYa",
+              "value": 11000,
+              "type": "number"
+            },
+            {
+              "id": "cfg-budget-buen",
+              "name": "budgetBuenPrecio",
+              "value": 14000,
+              "type": "number"
+            }
+          ]
+        }
+      },
+      "id": "cv-config-002",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// checavuelos — Buscar vuelos via SerpAPI (8 calls optimizadas)\n// Combina MID,CUN en una sola llamada para reducir 16 → 8 calls\n\nconst config = $input.first().json;\nconst API_KEY = config.serpApiKey;\n\nif (!API_KEY) {\n  return [{ json: { error: 'SERPAPI_KEY not configured', outbound: [], returns: [], roundtrips: [] } }];\n}\n\n// --- Config de rutas ---\nconst COMBINED_ORIGINS = 'MID,CUN';\nconst DESTINATIONS = 'FCO,FLR,PSA,MXP,CDG,ORY';\nconst RETURN_ORIGINS = 'FCO,FLR,PSA,MXP,BGY,NAP,VCE';\nconst OUTBOUND_DATES = ['2026-09-24', '2026-09-25', '2026-09-26', '2026-09-27'];\nconst RETURN_DATES = ['2026-10-12', '2026-10-13', '2026-10-14'];\nconst RT_OUTBOUND = '2026-09-25';\nconst RT_RETURN = '2026-10-12';\n\n// --- SerpAPI helper ---\nasync function searchFlights(params) {\n  const qs = new URLSearchParams({\n    engine: 'google_flights',\n    ...params,\n    hl: 'es',\n    gl: 'mx',\n    currency: 'MXN',\n    sort_by: '2',\n    api_key: API_KEY,\n  });\n  const url = `https://serpapi.com/search?${qs.toString()}`;\n  const res = await this.helpers.httpRequest({ method: 'GET', url, timeout: 30000 });\n  return typeof res === 'string' ? JSON.parse(res) : res;\n}\n\n// --- Procesar resultados one-way ---\nfunction processResults(serpData) {\n  const flights = [];\n  const bestFlights = serpData?.best_flights || [];\n  const otherFlights = serpData?.other_flights || [];\n  const all = [...bestFlights, ...otherFlights];\n\n  for (const flight of all.slice(0, 15)) {\n    const legs = flight.flights || [];\n    if (!legs.length) continue;\n    const first = legs[0];\n    const last = legs[legs.length - 1];\n    const airlines = [...new Set(legs.map(l => l.airline))].join(', ');\n    const fromCode = first.departure_airport?.id || '';\n    const toCode = last.arrival_airport?.id || '';\n\n    flights.push({\n      from: fromCode,\n      from_city: first.departure_airport?.name || fromCode,\n      to: toCode,\n      to_city: last.arrival_airport?.name || toCode,\n      airlines,\n      departure: first.departure_airport?.time || '',\n      arrival: last.arrival_airport?.time || '',\n      stops: legs.length - 1,\n      duration_h: Math.round((flight.total_duration || 0) / 60 * 10) / 10,\n      price_usd: flight.price || 0,\n      deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}`,\n      is_best: bestFlights.includes(flight),\n    });\n  }\n  flights.sort((a, b) => a.price_usd - b.price_usd);\n  return flights.slice(0, 10);\n}\n\n// --- Procesar resultados round-trip ---\nfunction processRoundtrip(serpData) {\n  const flights = [];\n  const bestFlights = serpData?.best_flights || [];\n  const otherFlights = serpData?.other_flights || [];\n  const all = [...bestFlights, ...otherFlights];\n\n  for (const flight of all.slice(0, 10)) {\n    const legs = flight.flights || [];\n    if (!legs.length) continue;\n    const first = legs[0];\n    const last = legs[legs.length - 1];\n    const airlines = [...new Set(legs.map(l => l.airline))].join(', ');\n    const fromCode = first.departure_airport?.id || '';\n    const toCode = last.arrival_airport?.id || '';\n\n    flights.push({\n      from: fromCode,\n      from_city: first.departure_airport?.name || fromCode,\n      to: toCode,\n      to_city: last.arrival_airport?.name || toCode,\n      airlines,\n      departure: first.departure_airport?.time || '',\n      arrival: last.arrival_airport?.time || '',\n      stops: legs.length - 1,\n      duration_h: Math.round((flight.total_duration || 0) / 60 * 10) / 10,\n      price_usd: flight.price || 0,\n      deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}`,\n      is_best: bestFlights.includes(flight),\n      type: 'roundtrip',\n    });\n  }\n  flights.sort((a, b) => a.price_usd - b.price_usd);\n  return flights.slice(0, 10);\n}\n\n// --- Dedup ---\nfunction dedup(flights) {\n  const seen = new Map();\n  for (const f of flights) {\n    const key = `${f.from}-${f.to}-${f.airlines}-${f.departure}`;\n    if (!seen.has(key) || f.price_usd < seen.get(key).price_usd) seen.set(key, f);\n  }\n  return [...seen.values()].sort((a, b) => a.price_usd - b.price_usd);\n}\n\n// === EJECUTAR BUSQUEDAS (8 calls) ===\nconst errors = [];\n\n// 4 outbound: MID,CUN → destinos x 4 fechas\nconst rawOutbound = [];\nfor (const date of OUTBOUND_DATES) {\n  try {\n    const data = await searchFlights.call(this, {\n      departure_id: COMBINED_ORIGINS,\n      arrival_id: DESTINATIONS,\n      outbound_date: date,\n      type: '2',\n    });\n    rawOutbound.push(...processResults(data));\n  } catch (e) {\n    errors.push(`outbound ${date}: ${e.message}`);\n  }\n}\n\n// 3 return: origenes Europa → MID,CUN x 3 fechas\nconst rawReturns = [];\nfor (const date of RETURN_DATES) {\n  try {\n    const data = await searchFlights.call(this, {\n      departure_id: RETURN_ORIGINS,\n      arrival_id: COMBINED_ORIGINS,\n      outbound_date: date,\n      type: '2',\n    });\n    rawReturns.push(...processResults(data));\n  } catch (e) {\n    errors.push(`return ${date}: ${e.message}`);\n  }\n}\n\n// 1 round-trip: MID,CUN → destinos\nconst rawRoundtrips = [];\ntry {\n  const data = await searchFlights.call(this, {\n    departure_id: COMBINED_ORIGINS,\n    arrival_id: DESTINATIONS,\n    outbound_date: RT_OUTBOUND,\n    return_date: RT_RETURN,\n    type: '1',\n  });\n  rawRoundtrips.push(...processRoundtrip(data));\n} catch (e) {\n  errors.push(`roundtrip: ${e.message}`);\n}\n\n// Dedup y limitar\nconst outbound = dedup(rawOutbound).slice(0, 15);\nconst returns = dedup(rawReturns).slice(0, 15);\nconst roundtrips = dedup(rawRoundtrips).slice(0, 10);\n\n// Calcular best combo para evaluacion de alerta\nconst bestOut = outbound[0] || null;\nconst bestRet = returns[0] || null;\nconst bestRT = roundtrips[0] || null;\nconst comboPrice = (bestOut && bestRet) ? bestOut.price_usd + bestRet.price_usd : Infinity;\nconst rtPrice = bestRT?.price_usd || Infinity;\nconst bestPrice = Math.min(comboPrice, rtPrice);\n\nreturn [{\n  json: {\n    outbound,\n    returns,\n    roundtrips,\n    bestPrice: bestPrice === Infinity ? null : bestPrice,\n    api_calls: 8,\n    errors: errors.length ? errors : undefined,\n  }\n}];"
+      },
+      "id": "cv-search-003",
+      "name": "Buscar Vuelos SerpAPI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-flights",
+              "leftValue": "={{ $json.outbound.length + $json.returns.length + $json.roundtrips.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "cv-if-results-004",
+      "name": "Tiene Resultados?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [660, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').item.json.workerUrl }}/api/ingest",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('Config').item.json.ingestSecret }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ outbound: $('Buscar Vuelos SerpAPI').item.json.outbound, returns: $('Buscar Vuelos SerpAPI').item.json.returns, roundtrips: $('Buscar Vuelos SerpAPI').item.json.roundtrips }) }}"
+      },
+      "id": "cv-post-ingest-005",
+      "name": "POST a Worker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, -80]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-alert",
+              "leftValue": "={{ $json.alert_level }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "isNotEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "cv-if-alert-006",
+      "name": "Precio Bueno?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1100, -80]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "wa-msg",
+              "name": "waMessage",
+              "value": "={{ (() => { const r = $('POST a Worker').item.json; const level = r.alert_level; const price = r.best_overall?.price_per_person; const total = r.best_overall?.price_2_passengers; const emoji = level === 'COMPRA_YA' ? '\\ud83d\\udea8' : '\\u2708\\ufe0f'; const tag = level === 'COMPRA_YA' ? 'COMPRA YA' : 'Buen precio'; return `${emoji} *checavuelos — ${tag}*\\n\\nMejor precio: *$${price?.toLocaleString('es-MX')} MXN* por persona\\nTotal 2 pasajeros: *$${total?.toLocaleString('es-MX')} MXN*\\n\\nRevisa el dashboard:\\nhttps://vicentedomus.github.io/checavuelos/`; })() }}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "cv-prep-wa-007",
+      "name": "Preparar WhatsApp",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1320, -160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.twilio.com/2010-04-01/Accounts/YOUR_TWILIO_ACCOUNT_SID/Messages.json",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "twilioApi",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "To",
+              "value": "whatsapp:+529991569426"
+            },
+            {
+              "name": "From",
+              "value": "whatsapp:+12313227508"
+            },
+            {
+              "name": "Body",
+              "value": "={{ $json.waMessage }}"
+            }
+          ]
+        }
+      },
+      "id": "cv-wa-send-008",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1540, -160],
+      "credentials": {
+        "twilioApi": {
+          "id": "KnkgtoKot0EQ7Kel",
+          "name": "Twilio account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "cv-noop-009",
+      "name": "Sin Datos",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [880, 120]
+    },
+    {
+      "parameters": {},
+      "id": "cv-noop-010",
+      "name": "Sin Alerta",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1320, 0]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Config": {
+      "main": [[{ "node": "Buscar Vuelos SerpAPI", "type": "main", "index": 0 }]]
+    },
+    "Buscar Vuelos SerpAPI": {
+      "main": [[{ "node": "Tiene Resultados?", "type": "main", "index": 0 }]]
+    },
+    "Tiene Resultados?": {
+      "main": [
+        [{ "node": "POST a Worker", "type": "main", "index": 0 }],
+        [{ "node": "Sin Datos", "type": "main", "index": 0 }]
+      ]
+    },
+    "POST a Worker": {
+      "main": [[{ "node": "Precio Bueno?", "type": "main", "index": 0 }]]
+    },
+    "Precio Bueno?": {
+      "main": [
+        [{ "node": "Preparar WhatsApp", "type": "main", "index": 0 }],
+        [{ "node": "Sin Alerta", "type": "main", "index": 0 }]
+      ]
+    },
+    "Preparar WhatsApp": {
+      "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [],
+  "pinData": {}
+}

@@ -9,8 +9,12 @@
   function getPriceLevel(totalPerPerson) {
     if (totalPerPerson <= CONFIG.BUDGET_COMPRA_YA) return 'compra-ya';
     if (totalPerPerson <= CONFIG.BUDGET_BUEN_PRECIO) return 'buen-precio';
-    if (totalPerPerson <= 1100) return 'normal';
+    if (totalPerPerson <= (CONFIG.BUDGET_NORMAL_MAX || 18000)) return 'normal';
     return 'caro';
+  }
+
+  function formatPrice(amount) {
+    return '$' + amount.toLocaleString('es-MX');
   }
 
   function getLevelText(level) {
@@ -71,20 +75,20 @@
     badge.textContent = getLevelText(level);
     badge.className = `hero-badge ${level}`;
 
-    $('#hero-per-person').textContent = `$${combo.total_per_person} USD`;
-    $('#hero-total').textContent = `$${combo.total_2_passengers} USD`;
+    $('#hero-per-person').textContent = `${formatPrice(combo.total_per_person)} MXN`;
+    $('#hero-total').textContent = `${formatPrice(combo.total_2_passengers)} MXN`;
 
     // Ida
     const ob = combo.outbound;
     $('#hero-out-route').textContent = `${ob.from} → ${ob.to}`;
-    $('#hero-out-info').textContent = `${ob.airlines} · ${ob.stops} escala(s) · ${ob.duration_h}h · $${ob.price_usd}`;
+    $('#hero-out-info').textContent = `${ob.airlines} · ${ob.stops} escala(s) · ${ob.duration_h}h · ${formatPrice(ob.price_usd)}`;
     $('#hero-out-date').textContent = formatDate(ob.departure);
     $('#hero-out-link').href = ob.deep_link;
 
     // Vuelta
     const ret = combo.return;
     $('#hero-ret-route').textContent = `${ret.from} → ${ret.to}`;
-    $('#hero-ret-info').textContent = `${ret.airlines} · ${ret.stops} escala(s) · ${ret.duration_h}h · $${ret.price_usd}`;
+    $('#hero-ret-info').textContent = `${ret.airlines} · ${ret.stops} escala(s) · ${ret.duration_h}h · ${formatPrice(ret.price_usd)}`;
     $('#hero-ret-date').textContent = formatDate(ret.departure);
     $('#hero-ret-link').href = ret.deep_link;
   }
@@ -99,7 +103,7 @@
     }
 
     tbody.innerHTML = flights.map(f => {
-      const level = getPriceLevel(f.price_usd * 2); // estimacion: ida ~= mitad del total
+      const level = getPriceLevel(f.price_usd * 2);
       return `<tr>
         <td>${f.from}</td>
         <td>${f.to}</td>
@@ -107,7 +111,7 @@
         <td>${formatDate(f.departure)}</td>
         <td>${f.stops}</td>
         <td>${f.duration_h}h</td>
-        <td class="price">\$${f.price_usd}</td>
+        <td class="price ${level}">${formatPrice(f.price_usd)}</td>
         <td><a href="${f.deep_link}" target="_blank" class="btn btn-sm">Ver</a></td>
       </tr>`;
     }).join('');
@@ -130,7 +134,7 @@
         <td>${f.airlines}</td>
         <td>${f.stops}</td>
         <td>${f.duration_h}h</td>
-        <td class="price">\\$${f.price_usd}</td>
+        <td class="price ${level}">${formatPrice(f.price_usd)}</td>
         <td><a href="${f.deep_link}" target="_blank" class="btn btn-sm">Ver</a></td>
       </tr>`;
     }).join('');
@@ -213,7 +217,7 @@
           y: {
             beginAtZero: false,
             ticks: {
-              callback: (v) => '$' + v,
+              callback: (v) => '$' + v.toLocaleString('es-MX'),
             },
           },
         },
@@ -224,37 +228,35 @@
           const yScale = chart.scales.y;
           const ctx = chart.ctx;
 
-          // Linea $750
-          const y750 = yScale.getPixelForValue(CONFIG.BUDGET_COMPRA_YA);
-          if (y750 >= yScale.top && y750 <= yScale.bottom) {
+          const yCompra = yScale.getPixelForValue(CONFIG.BUDGET_COMPRA_YA);
+          if (yCompra >= yScale.top && yCompra <= yScale.bottom) {
             ctx.save();
             ctx.strokeStyle = '#e53e3e';
             ctx.lineWidth = 1;
             ctx.setLineDash([4, 4]);
             ctx.beginPath();
-            ctx.moveTo(chart.chartArea.left, y750);
-            ctx.lineTo(chart.chartArea.right, y750);
+            ctx.moveTo(chart.chartArea.left, yCompra);
+            ctx.lineTo(chart.chartArea.right, yCompra);
             ctx.stroke();
             ctx.fillStyle = '#e53e3e';
             ctx.font = '11px sans-serif';
-            ctx.fillText('$750 COMPRA YA', chart.chartArea.left + 4, y750 - 4);
+            ctx.fillText('$11,000 COMPRA YA', chart.chartArea.left + 4, yCompra - 4);
             ctx.restore();
           }
 
-          // Linea $900
-          const y900 = yScale.getPixelForValue(CONFIG.BUDGET_BUEN_PRECIO);
-          if (y900 >= yScale.top && y900 <= yScale.bottom) {
+          const yBuen = yScale.getPixelForValue(CONFIG.BUDGET_BUEN_PRECIO);
+          if (yBuen >= yScale.top && yBuen <= yScale.bottom) {
             ctx.save();
             ctx.strokeStyle = '#38a169';
             ctx.lineWidth = 1;
             ctx.setLineDash([4, 4]);
             ctx.beginPath();
-            ctx.moveTo(chart.chartArea.left, y900);
-            ctx.lineTo(chart.chartArea.right, y900);
+            ctx.moveTo(chart.chartArea.left, yBuen);
+            ctx.lineTo(chart.chartArea.right, yBuen);
             ctx.stroke();
             ctx.fillStyle = '#38a169';
             ctx.font = '11px sans-serif';
-            ctx.fillText('$900 Buen precio', chart.chartArea.left + 4, y900 - 4);
+            ctx.fillText('$14,000 Buen precio', chart.chartArea.left + 4, yBuen - 4);
             ctx.restore();
           }
         },
@@ -273,7 +275,8 @@
 
       if (latestRes.ok) {
         const latest = await latestRes.json();
-        $('#updated').textContent = `Actualizado: ${timeAgo(latest.updated_at)} (${formatDateTime(latest.updated_at)})`;
+        const source = latest.source === 'n8n' ? 'via n8n' : latest.source === 'serpapi' ? 'via SerpAPI' : '';
+        $('#updated').textContent = `Actualizado: ${timeAgo(latest.updated_at)} ${source} (${formatDateTime(latest.updated_at)})`;
         renderHero(latest);
         renderTable('table-outbound', latest.outbound);
         renderTable('table-return', latest.returns);
@@ -295,20 +298,26 @@
   }
 
   // --- Countdown a siguiente actualizacion ---
-  // Cron: martes a las 08:00 UTC (2:00 AM hora Merida), cada 5 dias aprox
-  // Pero el cron real corre cada martes, asi que calculamos el proximo martes 08:00 UTC
+  // n8n: martes y viernes a las 08:00 UTC (2:00 AM Merida)
   function startCountdown() {
     function getNextRun() {
       const now = new Date();
-      const next = new Date(now);
-      // Buscar el proximo martes (dia 2)
-      const daysUntilTuesday = (2 - now.getUTCDay() + 7) % 7 || 7;
-      next.setUTCDate(now.getUTCDate() + daysUntilTuesday);
-      next.setUTCHours(8, 0, 0, 0);
-      // Si ya paso el martes de esta semana pero estamos antes del martes, ajustar
-      if (next <= now) {
-        next.setUTCDate(next.getUTCDate() + 7);
+      const RUN_DAYS = [2, 5]; // martes, viernes
+
+      // Buscar el proximo dia de ejecucion
+      for (let offset = 0; offset <= 7; offset++) {
+        const candidate = new Date(now);
+        candidate.setUTCDate(now.getUTCDate() + offset);
+        candidate.setUTCHours(8, 0, 0, 0);
+        if (candidate > now && RUN_DAYS.includes(candidate.getUTCDay())) {
+          return candidate;
+        }
       }
+      // Fallback: proximo martes
+      const next = new Date(now);
+      const daysUntil = (2 - now.getUTCDay() + 7) % 7 || 7;
+      next.setUTCDate(now.getUTCDate() + daysUntil);
+      next.setUTCHours(8, 0, 0, 0);
       return next;
     }
 
@@ -332,7 +341,7 @@
     }
 
     updateCountdown();
-    setInterval(updateCountdown, 60000); // actualizar cada minuto
+    setInterval(updateCountdown, 60000);
   }
 
   loadData();

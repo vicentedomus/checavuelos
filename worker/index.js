@@ -1,23 +1,269 @@
-// Cloudflare Worker: monitor de precios de vuelos via SerpAPI (Google Flights)
+// Cloudflare Worker: monitor de precios de vuelos
+// Soporta dos fuentes de datos:
+//   1. n8n via POST /api/ingest (recomendado)
+//   2. SerpAPI via cron/refresh (fallback)
+//
 // Secrets necesarios:
-//   wrangler secret put SERPAPI_KEY
-//   wrangler secret put RESEND_API_KEY
+//   wrangler secret put INGEST_SECRET
+//   wrangler secret put SERPAPI_KEY  (opcional, solo si usas el cron fallback)
 
 const SERPAPI_URL = 'https://serpapi.com/search';
 
 // Configuracion de busqueda
-// Busquedas separadas por aeropuerto de origen (MID y CUN) para asegurar resultados de ambos
-// 16 API calls por ejecucion × ~6 ejecuciones/mes (cada martes) = ~96/mes de 100 gratis
 const DESTINATIONS = 'FCO,FLR,PSA,MXP,CDG,ORY';
 const RETURN_ORIGINS = 'FCO,FLR,PSA,MXP,BGY,NAP,VCE';
 const ORIGINS = ['MID', 'CUN'];
 const OUTBOUND_DATES = ['2026-09-24', '2026-09-25', '2026-09-26', '2026-09-27'];
 const RETURN_DATES = ['2026-10-12', '2026-10-13', '2026-10-14'];
-// Round-trip: fecha ancla (la mas probable)
 const RT_OUTBOUND = '2026-09-25';
 const RT_RETURN = '2026-10-12';
 
-// --- Busqueda SerpAPI ---
+// --- Procesamiento compartido ---
+
+function deduplicateFlights(flights) {
+  const seen = new Map();
+  for (const f of flights) {
+    const key = `${f.from}-${f.to}-${f.airlines}-${f.departure}`;
+    if (!seen.has(key) || f.price_usd < seen.get(key).price_usd) {
+      seen.set(key, f);
+    }
+  }
+  return [...seen.values()].sort((a, b) => a.price_usd - b.price_usd);
+}
+
+function buildBestResults(allOutbound, allReturns, allRoundtrips) {
+  const bestOutbound = allOutbound[0] || null;
+  const bestReturn = allReturns[0] || null;
+  let bestCombo = null;
+
+  if (bestOutbound && bestReturn) {
+    bestCombo = {
+      outbound: bestOutbound,
+      return: bestReturn,
+      total_per_person: bestOutbound.price_usd + bestReturn.price_usd,
+      total_2_passengers: (bestOutbound.price_usd + bestReturn.price_usd) * 2,
+    };
+  }
+
+  const bestRoundtrip = allRoundtrips[0] || null;
+
+  let bestOverall = null;
+  const comboPrice = bestCombo?.total_per_person || Infinity;
+  const rtPrice = bestRoundtrip?.price_usd || Infinity;
+
+  if (comboPrice <= rtPrice && bestCombo) {
+    bestOverall = { source: 'one-way', price_per_person: comboPrice, price_2_passengers: comboPrice * 2 };
+  } else if (bestRoundtrip) {
+    bestOverall = { source: 'roundtrip', price_per_person: rtPrice, price_2_passengers: rtPrice * 2 };
+  }
+
+  return { bestOutbound, bestReturn, bestCombo, bestRoundtrip, bestOverall };
+}
+
+// Evaluar si toca alerta (cooldown 24h o baja >$500 MXN)
+async function evaluateAlert(env, currentPrice) {
+  const budgetCompraYa = parseInt(env.BUDGET_COMPRA_YA || '11000');
+  const budgetBuenPrecio = parseInt(env.BUDGET_BUEN_PRECIO || '14000');
+
+  if (currentPrice > budgetBuenPrecio) return null;
+
+  let alertsData = {};
+  try {
+    const stored = await env.FLIGHTS_KV.get('alerts_sent', 'json');
+    if (stored) alertsData = stored;
+  } catch { /* primera vez */ }
+
+  const now = Date.now();
+  const lastSent = alertsData.last_sent || 0;
+  const lastPrice = alertsData.last_price || Infinity;
+  const hoursSinceLast = (now - lastSent) / (1000 * 60 * 60);
+
+  // Enviar si: han pasado 24h, O el precio bajo >$500 MXN del ultimo alertado
+  if (hoursSinceLast < 24 && (lastPrice - currentPrice) < 500) return null;
+
+  return currentPrice <= budgetCompraYa ? 'COMPRA_YA' : 'BUEN_PRECIO';
+}
+
+// Registrar que se envio alerta (n8n llama esto despues de enviar WhatsApp)
+async function markAlertSent(env, price, level) {
+  await env.FLIGHTS_KV.put('alerts_sent', JSON.stringify({
+    last_sent: Date.now(),
+    last_price: price,
+    level,
+  }));
+}
+
+async function storeResults(env, allOutbound, allReturns, allRoundtrips, source, extraMeta = {}) {
+  const { bestOutbound, bestReturn, bestCombo, bestRoundtrip, bestOverall } =
+    buildBestResults(allOutbound, allReturns, allRoundtrips);
+
+  const now = new Date().toISOString();
+
+  // Evaluar alerta
+  const alertPrice = bestOverall?.price_per_person || null;
+  let alertLevel = null;
+  if (alertPrice) {
+    alertLevel = await evaluateAlert(env, alertPrice);
+    // Si hay alerta, marcar como enviada (n8n se encarga del WhatsApp)
+    if (alertLevel) {
+      await markAlertSent(env, alertPrice, alertLevel);
+    }
+  }
+
+  const latest = {
+    updated_at: now,
+    source,
+    outbound: allOutbound,
+    returns: allReturns,
+    roundtrips: allRoundtrips,
+    best_combo: bestCombo,
+    best_roundtrip: bestRoundtrip,
+    best_overall: bestOverall,
+    search_params: {
+      origins: ORIGINS,
+      destinations: DESTINATIONS,
+      return_origins: RETURN_ORIGINS,
+      outbound_dates: OUTBOUND_DATES,
+      return_dates: RETURN_DATES,
+      rt_outbound: RT_OUTBOUND,
+      rt_return: RT_RETURN,
+    },
+    ...extraMeta,
+  };
+  await env.FLIGHTS_KV.put('latest', JSON.stringify(latest));
+
+  // Actualizar history
+  let history = [];
+  try {
+    const stored = await env.FLIGHTS_KV.get('history', 'json');
+    if (stored) history = stored;
+  } catch { /* primera vez */ }
+
+  history.push({
+    timestamp: now,
+    source,
+    best_outbound_price: bestOutbound?.price_usd || null,
+    best_return_price: bestReturn?.price_usd || null,
+    best_total: bestCombo?.total_per_person || null,
+    best_roundtrip_price: bestRoundtrip?.price_usd || null,
+    best_overall_price: bestOverall?.price_per_person || null,
+    results_outbound: allOutbound.length,
+    results_return: allReturns.length,
+    results_roundtrip: allRoundtrips.length,
+  });
+
+  if (history.length > 300) history = history.slice(-300);
+  await env.FLIGHTS_KV.put('history', JSON.stringify(history));
+
+  return { latest, alertLevel };
+}
+
+// --- Ingest: recibir datos desde n8n ---
+
+function validateFlightData(flight) {
+  const required = ['from', 'to', 'airlines', 'price_usd'];
+  for (const field of required) {
+    if (!flight[field] && flight[field] !== 0) return false;
+  }
+  if (typeof flight.price_usd !== 'number' || flight.price_usd < 0) return false;
+  return true;
+}
+
+function normalizeIngestedFlight(flight, type) {
+  return {
+    id: flight.id || `${type}-${flight.from}-${flight.to}-${flight.price_usd}-${Date.now()}`,
+    from: flight.from,
+    from_city: flight.from_city || flight.from,
+    to: flight.to,
+    to_city: flight.to_city || flight.to,
+    airlines: flight.airlines,
+    departure: flight.departure || '',
+    arrival: flight.arrival || '',
+    stops: flight.stops ?? 0,
+    duration_h: flight.duration_h ?? 0,
+    price_usd: flight.price_usd,
+    deep_link: flight.deep_link || `https://www.google.com/travel/flights?q=flights+from+${flight.from}+to+${flight.to}`,
+    is_best: flight.is_best || false,
+    ...(type === 'roundtrip' ? { type: 'roundtrip' } : {}),
+  };
+}
+
+async function handleIngest(request, env) {
+  const secret = env.INGEST_SECRET;
+  if (!secret) {
+    return { error: 'INGEST_SECRET not configured on worker', status: 500 };
+  }
+
+  // Auth: Bearer token o query param
+  const authHeader = request.headers.get('Authorization') || '';
+  const url = new URL(request.url);
+  const queryKey = url.searchParams.get('key');
+  const token = authHeader.replace('Bearer ', '').trim() || queryKey;
+
+  if (token !== secret) {
+    return { error: 'Unauthorized', status: 401 };
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return { error: 'Invalid JSON body', status: 400 };
+  }
+
+  const rawOutbound = body.outbound || [];
+  const rawReturns = body.returns || [];
+  const rawRoundtrips = body.roundtrips || [];
+
+  if (!rawOutbound.length && !rawReturns.length && !rawRoundtrips.length) {
+    return { error: 'No flight data provided. Expected: { outbound: [...], returns: [...], roundtrips: [...] }', status: 400 };
+  }
+
+  // Validar y normalizar
+  const errors = [];
+  const outbound = [];
+  const returns = [];
+  const roundtrips = [];
+
+  for (const [i, f] of rawOutbound.entries()) {
+    if (!validateFlightData(f)) { errors.push(`outbound[${i}]: missing required fields`); continue; }
+    outbound.push(normalizeIngestedFlight(f, 'outbound'));
+  }
+  for (const [i, f] of rawReturns.entries()) {
+    if (!validateFlightData(f)) { errors.push(`returns[${i}]: missing required fields`); continue; }
+    returns.push(normalizeIngestedFlight(f, 'return'));
+  }
+  for (const [i, f] of rawRoundtrips.entries()) {
+    if (!validateFlightData(f)) { errors.push(`roundtrips[${i}]: missing required fields`); continue; }
+    roundtrips.push(normalizeIngestedFlight(f, 'roundtrip'));
+  }
+
+  // Dedup y ordenar
+  const dedupOutbound = deduplicateFlights(outbound).slice(0, 15);
+  const dedupReturns = deduplicateFlights(returns).slice(0, 15);
+  const dedupRoundtrips = deduplicateFlights(roundtrips).slice(0, 10);
+
+  const { latest, alertLevel } = await storeResults(env, dedupOutbound, dedupReturns, dedupRoundtrips, 'n8n', {
+    ingested_at: new Date().toISOString(),
+  });
+
+  return {
+    data: {
+      message: 'Flight data ingested successfully',
+      counts: {
+        outbound: { received: rawOutbound.length, valid: outbound.length, after_dedup: dedupOutbound.length },
+        returns: { received: rawReturns.length, valid: returns.length, after_dedup: dedupReturns.length },
+        roundtrips: { received: rawRoundtrips.length, valid: roundtrips.length, after_dedup: dedupRoundtrips.length },
+      },
+      best_overall: latest.best_overall,
+      alert_level: alertLevel,
+      errors: errors.length ? errors : undefined,
+    },
+    status: 200,
+  };
+}
+
+// --- SerpAPI search (fallback) ---
 
 async function searchFlights(config, apiKey) {
   const params = new URLSearchParams({
@@ -28,12 +274,11 @@ async function searchFlights(config, apiKey) {
     type: config.type,
     hl: 'es',
     gl: 'mx',
-    currency: 'USD',
-    sort_by: '2',  // Ordenar por precio
+    currency: 'MXN',
+    sort_by: '2',
     api_key: apiKey,
   });
 
-  // Agregar return_date solo para round trip
   if (config.return_date) {
     params.set('return_date', config.return_date);
   }
@@ -48,10 +293,8 @@ async function searchFlights(config, apiKey) {
   return res.json();
 }
 
-// Procesar resultados round-trip (estructura diferente a one-way)
 function processRoundtripResults(serpData) {
   const flights = [];
-
   const bestFlights = serpData?.best_flights || [];
   const otherFlights = serpData?.other_flights || [];
   const allFlights = [...bestFlights, ...otherFlights];
@@ -78,7 +321,7 @@ function processRoundtripResults(serpData) {
       arrival: lastLeg.arrival_airport?.time || '',
       stops,
       duration_h: Math.round((flight.total_duration || 0) / 60 * 10) / 10,
-      price_usd: flight.price || 0,  // Precio round-trip completo
+      price_usd: flight.price || 0,
       deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}`,
       is_best: bestFlights.includes(flight),
       type: 'roundtrip',
@@ -91,8 +334,6 @@ function processRoundtripResults(serpData) {
 
 function processResults(serpData) {
   const flights = [];
-
-  // SerpAPI devuelve best_flights y other_flights
   const bestFlights = serpData?.best_flights || [];
   const otherFlights = serpData?.other_flights || [];
   const allFlights = [...bestFlights, ...otherFlights];
@@ -105,11 +346,8 @@ function processResults(serpData) {
     const lastLeg = legs[legs.length - 1];
     const airlines = [...new Set(legs.map(l => l.airline))].join(', ');
     const stops = legs.length - 1;
-
-    // Construir deep link a Google Flights
     const fromCode = firstLeg.departure_airport?.id || '';
     const toCode = lastLeg.arrival_airport?.id || '';
-    const depDate = firstLeg.departure_airport?.time?.split(', ')?.[0] || '';
 
     flights.push({
       id: `${fromCode}-${toCode}-${flight.price}-${firstLeg.flight_number || ''}`,
@@ -125,124 +363,17 @@ function processResults(serpData) {
       price_usd: flight.price || 0,
       deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}`,
       is_best: bestFlights.includes(flight),
-      carbon_emissions: flight.carbon_emissions?.this_flight || null,
     });
   }
 
-  // Ordenar por precio
   flights.sort((a, b) => a.price_usd - b.price_usd);
   return flights.slice(0, 10);
 }
 
-// --- Alertas email via Resend ---
-
-async function shouldSendAlert(env, currentPrice) {
-  const budgetCompraYa = parseInt(env.BUDGET_COMPRA_YA || '750');
-  const budgetBuenPrecio = parseInt(env.BUDGET_BUEN_PRECIO || '900');
-
-  if (currentPrice > budgetBuenPrecio) return null;
-
-  let alertsData = {};
-  try {
-    const stored = await env.FLIGHTS_KV.get('alerts_sent', 'json');
-    if (stored) alertsData = stored;
-  } catch { /* primera vez */ }
-
-  const now = Date.now();
-  const lastSent = alertsData.last_sent || 0;
-  const lastPrice = alertsData.last_price || Infinity;
-  const hoursSinceLast = (now - lastSent) / (1000 * 60 * 60);
-
-  // Enviar si: han pasado 24h, O el precio bajo >$50 del ultimo alertado
-  if (hoursSinceLast < 24 && (lastPrice - currentPrice) < 50) return null;
-
-  return currentPrice <= budgetCompraYa ? 'COMPRA_YA' : 'BUEN_PRECIO';
-}
-
-async function sendAlert(env, level, bestCombo) {
-  const apiKey = env.RESEND_API_KEY;
-  if (!apiKey) return;
-
-  const isUrgent = level === 'COMPRA_YA';
-  const emoji = isUrgent ? '🚨' : '✈️';
-  const levelText = isUrgent ? 'COMPRA YA' : 'Buen precio';
-  const color = isUrgent ? '#e53e3e' : '#38a169';
-
-  const totalPerPerson = bestCombo.total_per_person;
-  const total2 = bestCombo.total_2_passengers;
-  const ob = bestCombo.outbound;
-  const ret = bestCombo.return;
-
-  const html = `
-    <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
-      <h1 style="color:${color}">${emoji} ${levelText}: $${totalPerPerson}/persona</h1>
-      <p style="font-size:18px">Total para 2 pasajeros: <strong>$${total2} USD</strong></p>
-      <hr>
-      <h3>✈️ Ida</h3>
-      <p><strong>${ob.from_city} (${ob.from}) → ${ob.to_city} (${ob.to})</strong></p>
-      <p>${ob.airlines} · ${ob.stops} escala(s) · ${ob.duration_h}h</p>
-      <p>Salida: ${ob.departure}</p>
-      <p>Precio: <strong>$${ob.price_usd} USD</strong></p>
-      <a href="${ob.deep_link}" style="display:inline-block;padding:10px 20px;background:${color};color:#fff;text-decoration:none;border-radius:5px">Buscar en Google Flights</a>
-      <hr>
-      <h3>🛬 Vuelta</h3>
-      <p><strong>${ret.from_city} (${ret.from}) → ${ret.to_city} (${ret.to})</strong></p>
-      <p>${ret.airlines} · ${ret.stops} escala(s) · ${ret.duration_h}h</p>
-      <p>Salida: ${ret.departure}</p>
-      <p>Precio: <strong>$${ret.price_usd} USD</strong></p>
-      <a href="${ret.deep_link}" style="display:inline-block;padding:10px 20px;background:${color};color:#fff;text-decoration:none;border-radius:5px">Buscar en Google Flights</a>
-      <hr>
-      <p style="color:#888;font-size:12px">checavuelos · Datos via Google Flights (SerpAPI)</p>
-    </div>
-  `;
-
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: 'checavuelos <onboarding@resend.dev>',
-      to: env.ALERT_EMAIL || 'vichomiguel@hotmail.com',
-      subject: `${emoji} ${levelText}: $${totalPerPerson}/persona - Vuelo a Italia`,
-      html,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    console.error('Resend error:', err);
-    return;
-  }
-
-  await env.FLIGHTS_KV.put('alerts_sent', JSON.stringify({
-    last_sent: Date.now(),
-    last_price: totalPerPerson,
-    level,
-  }));
-}
-
-// --- Logica principal ---
-
-// Deduplicar vuelos por id, quedandose con el mas barato
-function deduplicateFlights(flights) {
-  const seen = new Map();
-  for (const f of flights) {
-    const key = `${f.from}-${f.to}-${f.airlines}-${f.departure}`;
-    if (!seen.has(key) || f.price_usd < seen.get(key).price_usd) {
-      seen.set(key, f);
-    }
-  }
-  return [...seen.values()].sort((a, b) => a.price_usd - b.price_usd);
-}
-
 async function runSearch(env) {
   const apiKey = env.SERPAPI_KEY;
-  if (!apiKey) throw new Error('SERPAPI_KEY not configured');
+  if (!apiKey) throw new Error('SERPAPI_KEY not configured (use n8n ingest instead)');
 
-  // Generar todas las busquedas
-  // Outbound: 2 origenes × 4 fechas = 8 calls
   const outboundSearches = [];
   for (const origin of ORIGINS) {
     for (const date of OUTBOUND_DATES) {
@@ -255,7 +386,6 @@ async function runSearch(env) {
     }
   }
 
-  // Return: 2 destinos × 3 fechas = 6 calls
   const returnSearches = [];
   for (const dest of ORIGINS) {
     for (const date of RETURN_DATES) {
@@ -268,7 +398,6 @@ async function runSearch(env) {
     }
   }
 
-  // Round-trip: 2 origenes × 1 combo de fechas = 2 calls
   const rtSearches = [];
   for (const origin of ORIGINS) {
     rtSearches.push(searchFlights({
@@ -280,18 +409,16 @@ async function runSearch(env) {
     }, apiKey));
   }
 
-  // Ejecutar todas en paralelo (16 calls)
   const allResults = await Promise.all([
     ...outboundSearches,
     ...returnSearches,
     ...rtSearches,
   ]);
 
-  const outboundCount = outboundSearches.length;  // 8
-  const returnCount = returnSearches.length;        // 6
-  const totalCalls = outboundCount + returnCount + rtSearches.length;  // 16
+  const outboundCount = outboundSearches.length;
+  const returnCount = returnSearches.length;
+  const totalCalls = outboundCount + returnCount + rtSearches.length;
 
-  // Procesar y mergear resultados
   let allOutbound = [];
   for (let i = 0; i < outboundCount; i++) {
     allOutbound.push(...processResults(allResults[i]));
@@ -310,97 +437,9 @@ async function runSearch(env) {
   }
   allRoundtrips = deduplicateFlights(allRoundtrips).slice(0, 10);
 
-  // Calcular mejor combo one-way (ida + vuelta separadas)
-  const bestOutbound = allOutbound[0] || null;
-  const bestReturn = allReturns[0] || null;
-  let bestCombo = null;
-
-  if (bestOutbound && bestReturn) {
-    bestCombo = {
-      outbound: bestOutbound,
-      return: bestReturn,
-      total_per_person: bestOutbound.price_usd + bestReturn.price_usd,
-      total_2_passengers: (bestOutbound.price_usd + bestReturn.price_usd) * 2,
-    };
-  }
-
-  // Mejor round-trip (ya es precio por persona ida+vuelta)
-  const bestRoundtrip = allRoundtrips[0] || null;
-
-  // Determinar el mejor precio global: combo one-way vs round-trip
-  let bestOverall = null;
-  const comboPrice = bestCombo?.total_per_person || Infinity;
-  const rtPrice = bestRoundtrip?.price_usd || Infinity;
-
-  if (comboPrice <= rtPrice && bestCombo) {
-    bestOverall = { source: 'one-way', price_per_person: comboPrice, price_2_passengers: comboPrice * 2 };
-  } else if (bestRoundtrip) {
-    bestOverall = { source: 'roundtrip', price_per_person: rtPrice, price_2_passengers: rtPrice * 2 };
-  }
-
-  const now = new Date().toISOString();
-
-  const latest = {
-    updated_at: now,
-    outbound: allOutbound,
-    returns: allReturns,
-    roundtrips: allRoundtrips,
-    best_combo: bestCombo,
-    best_roundtrip: bestRoundtrip,
-    best_overall: bestOverall,
+  const { latest } = await storeResults(env, allOutbound, allReturns, allRoundtrips, 'serpapi', {
     api_calls_used: totalCalls,
-    search_params: {
-      origins: ORIGINS,
-      destinations: DESTINATIONS,
-      return_origins: RETURN_ORIGINS,
-      outbound_dates: OUTBOUND_DATES,
-      return_dates: RETURN_DATES,
-      rt_outbound: RT_OUTBOUND,
-      rt_return: RT_RETURN,
-    },
-  };
-  await env.FLIGHTS_KV.put('latest', JSON.stringify(latest));
-
-  // Actualizar history
-  let history = [];
-  try {
-    const stored = await env.FLIGHTS_KV.get('history', 'json');
-    if (stored) history = stored;
-  } catch { /* primera vez */ }
-
-  history.push({
-    timestamp: now,
-    best_outbound_price: bestOutbound?.price_usd || null,
-    best_return_price: bestReturn?.price_usd || null,
-    best_total: bestCombo?.total_per_person || null,
-    best_roundtrip_price: bestRoundtrip?.price_usd || null,
-    best_overall_price: bestOverall?.price_per_person || null,
-    results_outbound: allOutbound.length,
-    results_return: allReturns.length,
-    results_roundtrip: allRoundtrips.length,
   });
-
-  if (history.length > 300) history = history.slice(-300);
-  await env.FLIGHTS_KV.put('history', JSON.stringify(history));
-
-  // Evaluar alerta con el mejor precio global
-  const alertPrice = bestOverall?.price_per_person || null;
-  if (alertPrice) {
-    const alertLevel = await shouldSendAlert(env, alertPrice);
-    if (alertLevel) {
-      if (bestOverall.source === 'one-way' && bestCombo) {
-        await sendAlert(env, alertLevel, bestCombo);
-      } else if (bestRoundtrip) {
-        await sendAlert(env, alertLevel, {
-          outbound: bestRoundtrip,
-          return: { ...bestRoundtrip, from: bestRoundtrip.to, to: bestRoundtrip.from,
-            from_city: bestRoundtrip.to_city, to_city: bestRoundtrip.from_city },
-          total_per_person: bestRoundtrip.price_usd,
-          total_2_passengers: bestRoundtrip.price_usd * 2,
-        });
-      }
-    }
-  }
 
   return latest;
 }
@@ -408,9 +447,11 @@ async function runSearch(env) {
 // --- Request Handler ---
 
 export default {
-  // Cron: martes 8am UTC (2am Merida). 16 calls/ejecucion × ~6/mes = 96 de 100 gratis
+  // Cron fallback: solo ejecuta si hay SERPAPI_KEY configurada
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runSearch(env));
+    if (env.SERPAPI_KEY) {
+      ctx.waitUntil(runSearch(env));
+    }
   },
 
   async fetch(request, env) {
@@ -426,8 +467,8 @@ export default {
 
     const corsHeaders = {
       'Access-Control-Allow-Origin': matchedOrigin,
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Access-Control-Max-Age': '86400',
     };
 
@@ -442,7 +483,7 @@ export default {
       if (path === '/api/latest') {
         const data = await env.FLIGHTS_KV.get('latest');
         if (!data) {
-          return new Response(JSON.stringify({ error: 'No data yet. Trigger a refresh first.' }), {
+          return new Response(JSON.stringify({ error: 'No data yet. Send data via POST /api/ingest.' }), {
             status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
@@ -458,6 +499,16 @@ export default {
         });
       }
 
+      // n8n ingest endpoint
+      if (path === '/api/ingest' && request.method === 'POST') {
+        const result = await handleIngest(request, env);
+        return new Response(JSON.stringify(result.data || { error: result.error }), {
+          status: result.status,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // SerpAPI refresh (fallback)
       if (path === '/api/refresh') {
         const key = url.searchParams.get('key');
         if (key !== (env.REFRESH_SECRET || 'checavuelos2026')) {
@@ -473,7 +524,12 @@ export default {
 
       return new Response(JSON.stringify({
         error: 'Not found',
-        endpoints: ['/api/latest', '/api/history', '/api/refresh?key=<secret>'],
+        endpoints: [
+          'GET  /api/latest',
+          'GET  /api/history',
+          'POST /api/ingest  (n8n — recommended)',
+          'GET  /api/refresh?key=<secret>  (SerpAPI fallback)',
+        ],
       }), {
         status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });

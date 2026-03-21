@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "checavuelos",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "5500", "--directory", "/Users/vicentesolis/Mi unidad (vichomiguel@hotmail.com)/Claude/proyectos/checavuelos"],
+      "port": 5500
+    }
+  ]
+}
