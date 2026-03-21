@@ -7,7 +7,7 @@ account_id = "f657ac63c80efd60ceee8628b366e2d6"
 crons = ["0 8 * * 2"]  # Fallback: solo corre si SERPAPI_KEY esta configurada
 
 [vars]
-ALLOWED_ORIGIN = "https://vicentedomus.github.io/checavuelos"
+ALLOWED_ORIGIN = "https://vicentedomus.github.io"
 BUDGET_COMPRA_YA = "11000"
 BUDGET_BUEN_PRECIO = "14000"
 REFRESH_SECRET = "checavuelos2026"

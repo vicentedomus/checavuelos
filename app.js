@@ -344,6 +344,20 @@
     setInterval(updateCountdown, 60000);
   }
 
+  // --- Wedding countdown ---
+  function updateWeddingCountdown() {
+    const el = $('#wedding-countdown');
+    if (!el) return;
+    const wedding = new Date('2026-10-01T00:00:00');
+    const diff = wedding - Date.now();
+    if (diff <= 0) {
+      el.textContent = '0';
+      return;
+    }
+    el.textContent = Math.ceil(diff / (1000 * 60 * 60 * 24));
+  }
+
   loadData();
   startCountdown();
+  updateWeddingCountdown();
 })();

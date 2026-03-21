@@ -182,7 +182,7 @@ function normalizeIngestedFlight(flight, type) {
     stops: flight.stops ?? 0,
     duration_h: flight.duration_h ?? 0,
     price_usd: flight.price_usd,
-    deep_link: flight.deep_link || `https://www.google.com/travel/flights?q=flights+from+${flight.from}+to+${flight.to}`,
+    deep_link: flight.deep_link || `https://www.google.com/travel/flights?q=flights+from+${flight.from}+to+${flight.to}+on+${(flight.departure || '').slice(0, 10)}`,
     is_best: flight.is_best || false,
     ...(type === 'roundtrip' ? { type: 'roundtrip' } : {}),
   };
@@ -322,7 +322,7 @@ function processRoundtripResults(serpData) {
       stops,
       duration_h: Math.round((flight.total_duration || 0) / 60 * 10) / 10,
       price_usd: flight.price || 0,
-      deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}`,
+      deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}+on+${(firstLeg.departure_airport?.time || '').slice(0, 10)}`,
       is_best: bestFlights.includes(flight),
       type: 'roundtrip',
     });
@@ -361,7 +361,7 @@ function processResults(serpData) {
       stops,
       duration_h: Math.round((flight.total_duration || 0) / 60 * 10) / 10,
       price_usd: flight.price || 0,
-      deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}`,
+      deep_link: `https://www.google.com/travel/flights?q=flights+from+${fromCode}+to+${toCode}+on+${(firstLeg.departure_airport?.time || '').slice(0, 10)}`,
       is_best: bestFlights.includes(flight),
     });
   }
